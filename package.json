@@ -1,0 +1,16 @@
+{
+  "name": "pi-skill-autocomplete",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/skill-autocomplete.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "scripts": {
+    "test": "node tests/skill-autocomplete.mjs extensions/skill-autocomplete.ts"
+  }
+}
