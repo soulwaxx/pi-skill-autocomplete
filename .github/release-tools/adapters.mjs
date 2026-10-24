@@ -69,7 +69,7 @@ function repoPath(repository, ...parts) {
 function npmCli(args, options = {}, command = "npm") {
   const result = spawnSync(command, args, { encoding: "utf8", timeout: options.timeout ?? timeoutMs, maxBuffer: maxBody, stdio: ["ignore", "pipe", "pipe"], ...options });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`npm ${args[0]} failed (${result.status}): ${result.stderr.slice(0, 1000)}`);
+  if (result.status !== 0) throw new Error(`npm ${args[0]} failed (${result.status}): ${result.stderr.slice(-1000)}`);
   return result.stdout;
 }
 
