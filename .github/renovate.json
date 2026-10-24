@@ -1,20 +1,55 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "enabledManagers": ["github-actions", "npm", "custom.regex"],
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "timezone": "Europe/Rome",
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 0,
+  "dependencyDashboard": false,
+  "automerge": false,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "osvVulnerabilityAlerts": true,
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["^\\.github/workflows/release\\.yml$"],
-      "matchStrings": ["npm install --global npm@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
-      "depNameTemplate": "npm",
-      "datasourceTemplate": "npm"
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.yml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>[^\\s]+)\\s+[A-Za-z_-]+: ['\"]?(?<currentValue>[^\\s'\"]+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
     },
     {
-      "customType": "regex",
-      "fileMatch": ["^\\.github/workflows/test\\.yml$"],
-      "matchStrings": ["actionlint/releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/actionlint_"],
-      "depNameTemplate": "rhysd/actionlint",
-      "datasourceTemplate": "github-releases"
+      "matchManagers": ["custom.regex"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "CI tools"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchFileNames": [".github/release-tools/**"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "Release tools"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchFileNames": ["package.json"],
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "Development dependencies"
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "automerge": false
     }
   ]
 }

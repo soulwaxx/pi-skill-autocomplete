@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { runIsolated } from "./isolated-runner.mjs";
 
-for (const name of ["release.test.mjs", "bootstrap.test.mjs"]) {
+for (const name of ["ci-config.test.mjs", "release.test.mjs", "oidc.test.mjs"]) {
   const script = resolve(import.meta.dirname, name);
   const result = runIsolated(script, [], {
     parentEnv: {

@@ -170,6 +170,7 @@ assert.throws(() => selectReleaseVersion({ tags: [], commits: [] }), /requires r
 assert.throws(() => selectReleaseVersion({ tags: [], commits: ["malformed bootstrap commit"] }));
 assert.equal(selectReleaseVersion({ tags: ["v0.1.0"], commits: ["feat(ui): add panel"] }).version, "0.2.0");
 assert.equal(selectReleaseVersion({ tags: ["v0.1.0"], commits: ["fix: resolve edge case"] }).version, "0.1.1");
+assert.equal(selectReleaseVersion({ tags: ["v0.1.0"], commits: ["ci: align automation with obsidian-second-brain"] }).version, "0.1.1", "CI alignment must produce a new patch release");
 assert.equal(selectReleaseVersion({ tags: ["v0.1.0"], commits: ["feat: add API\n\nBREAKING CHANGE: callers must migrate"] }).version, "1.0.0");
 assert.equal(selectReleaseVersion({ tags: ["v0.1.0"], commits: ["fix: change API\n\nBREAKING-CHANGE: callers must migrate"] }).version, "1.0.0");
 assert.equal(selectReleaseVersion({ tags: ["v0.4.0"], commits: ["fix!: change contract"] }).version, "1.0.0");
