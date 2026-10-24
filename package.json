@@ -1,7 +1,26 @@
 {
-  "name": "pi-skill-autocomplete",
+  "name": "@soulwaxx/pi-skill-autocomplete",
   "version": "0.1.0",
-  "private": true,
+  "description": "Mid-prompt skill reference completion and guaranteed loading for Pi",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": ["pi-package"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soulwaxx/pi-skill-autocomplete.git"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "extensions/skill-autocomplete.ts",
+    "extensions/skill-reference-parser.ts",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
   "type": "module",
   "pi": {
     "extensions": ["./extensions/skill-autocomplete.ts"]
@@ -11,6 +30,21 @@
     "@earendil-works/pi-tui": "*"
   },
   "scripts": {
-    "test": "node tests/skill-autocomplete.mjs extensions/skill-autocomplete.ts"
+    "test": "node tests/run-tests.mjs",
+    "test:feasibility": "node tests/row5-feasibility.mjs",
+    "test:artifact": "node tests/npm-artifact.mjs",
+    "bench": "node tests/bench-runner.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint",
+    "check": "npm test && npm run typecheck && npm run lint",
+    "release:check": "node .github/release-tools/check.mjs",
+    "test:release": "node tests/run-release-tests.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.2",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
+    "@types/node": "22.19.21",
+    "typescript": "5.9.3"
   }
 }
