@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
 
@@ -12,6 +12,14 @@ permissions:
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # renovate: datasource=npm depName=npm
+  NPM_VERSION: '11.21.1'
 
 jobs:
   test:
@@ -31,40 +39,71 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
+          check-latest: true
           package-manager-cache: false
-      - run: npm ci --ignore-scripts
-      - run: npm run check
-      - run: npm run test:feasibility
-      - run: npm run test:artifact
-      - run: npm run bench
-      - run: npm ci --prefix .github/release-tools --ignore-scripts
-      - run: npm audit --audit-level=critical
-      - run: npm audit --prefix .github/release-tools --audit-level=critical
-      - run: npm run release:check
-      - run: npm run test:release
+      - name: Install npm CLI
+        run: npm install --global "npm@$NPM_VERSION" --ignore-scripts --no-fund
+      - name: Install locked development and release dependencies
+        run: |
+          npm ci --ignore-scripts --no-fund
+          npm ci --prefix .github/release-tools --ignore-scripts --no-fund
+      - name: Release configuration and regression tests
+        run: npm run release:check && npm run test:release
+      - name: Source tests, type checking, and lint
+        run: npm run check
+      - name: Runtime feasibility tests
+        run: npm run test:feasibility
+      - name: Packed runtime tests
+        run: npm run test:artifact
+      - name: Completion and submission benchmarks
+        run: npm run bench
 
   workflow-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Install pinned actionlint and verify its archive
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          check-latest: true
+          package-manager-cache: false
+      - name: Install npm CLI
+        run: npm install --global "npm@$NPM_VERSION" --ignore-scripts --no-fund
+      - name: Audit locked development and release dependencies
         run: |
-          curl --fail --location --retry 3 --output "$RUNNER_TEMP/actionlint.tar.gz" https://github.com/rhysd/actionlint/releases/download/v1.7.11/actionlint_1.7.11_linux_amd64.tar.gz
-          echo '900919a84f2229bac68ca9cd4103ea297abc35e9689ebb842c6e34a3d1b01b0a  '"$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-      - run: '"$RUNNER_TEMP/actionlint" .github/workflows/*.yml'
+          npm ci --ignore-scripts --no-fund
+          npm ci --prefix .github/release-tools --ignore-scripts --no-fund
+          npm audit --audit-level=critical
+          npm audit --prefix .github/release-tools --audit-level=critical
+      - name: Validate workflows with checksum-verified actionlint
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # renovate: datasource=github-releases depName=rhysd/actionlint
+          ACTIONLINT_VERSION: v1.7.12
+        run: |
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          gh release download "$ACTIONLINT_VERSION" --repo rhysd/actionlint \
+            --pattern '*_linux_amd64.tar.gz' --pattern '*_checksums.txt' --dir "$work"
+          (
+            cd "$work"
+            sha256sum --check --ignore-missing ./*_checksums.txt
+            tar -xzf ./*_linux_amd64.tar.gz actionlint
+          )
+          "$work/actionlint" -color
 
   ci:
     name: CI passed
     if: always()
     needs: [test, workflow-validation]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Require all matrix jobs to pass
+      - name: Require all checks to pass
         env:
           TEST_RESULT: ${{ needs.test.result }}
           WORKFLOW_RESULT: ${{ needs.workflow-validation.result }}

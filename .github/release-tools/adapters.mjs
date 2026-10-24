@@ -152,14 +152,10 @@ export async function createAdapters({ repository, token = process.env.GITHUB_TO
       assert.equal(release.draft, false);
       assert.equal(release.prerelease, false);
     },
-    async publishTarball(packageName, bytes, { tag, bootstrapToken = null }) {
+    async publishTarball(packageName, bytes, { tag }) {
       npmPackage(packageName);
       assert.equal(tag, "pi-release-candidate");
       assert.ok(Buffer.isBuffer(bytes) && bytes.length > 0);
-      if (bootstrapToken !== null) {
-        assert.equal(packageName, "@soulwaxx/pi-skill-autocomplete", "bootstrap is restricted to this package");
-        assert.ok(typeof bootstrapToken === "string" && /^\S{1,4096}$/.test(bootstrapToken), "bootstrap requires an explicit npm credential");
-      }
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-release-publish-"));
       try {
         const file = path.join(dir, `${packageName.replaceAll("/", "-")}.tgz`);
@@ -168,10 +164,9 @@ export async function createAdapters({ repository, token = process.env.GITHUB_TO
         fs.mkdirSync(home);
         const userConfig = path.join(dir, "user.npmrc");
         const globalConfig = path.join(dir, "global.npmrc");
-        fs.writeFileSync(userConfig, bootstrapToken === null ? "\n" : "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n", { mode: 0o600 });
+        fs.writeFileSync(userConfig, "\n", { mode: 0o600 });
         fs.writeFileSync(globalConfig, "\n");
-        const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:NPM_TOKEN|NODE_AUTH_TOKEN|BOOTSTRAP_NPM_TOKEN|NPM_BOOTSTRAP_TOKEN|npm_config_.*|NPM_CONFIG_.*)$/i.test(key)));
-        if (bootstrapToken !== null) env.NODE_AUTH_TOKEN = bootstrapToken;
+        const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:.*NPM.*TOKEN|NODE_AUTH_TOKEN|npm_config_.*)$/i.test(key)));
         Object.assign(env, { HOME: home, NPM_CONFIG_USERCONFIG: userConfig, NPM_CONFIG_GLOBALCONFIG: globalConfig, npm_config_userconfig: userConfig, npm_config_globalconfig: globalConfig });
         const version = npmCli(["--version"], { cwd: dir, env }, npmCommand).trim();
         assert.ok(semver.gte(version, "11.21.0"), "npm 11.21.0+ is required for trusted publishing and dist-tag OIDC");
@@ -189,7 +184,7 @@ export async function createAdapters({ repository, token = process.env.GITHUB_TO
         const globalConfig = path.join(dir, "global.npmrc");
         fs.writeFileSync(userConfig, "\n");
         fs.writeFileSync(globalConfig, "\n");
-        const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:NPM_TOKEN|NODE_AUTH_TOKEN|BOOTSTRAP_NPM_TOKEN|NPM_BOOTSTRAP_TOKEN|npm_config_.*|NPM_CONFIG_.*)$/i.test(key)));
+        const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:.*NPM.*TOKEN|NODE_AUTH_TOKEN|npm_config_.*)$/i.test(key)));
         Object.assign(env, { HOME: home, NPM_CONFIG_USERCONFIG: userConfig, NPM_CONFIG_GLOBALCONFIG: globalConfig, npm_config_userconfig: userConfig, npm_config_globalconfig: globalConfig });
         const npmVersion = npmCli(["--version"], { cwd: dir, env }, npmCommand).trim();
         assert.ok(semver.gte(npmVersion, "11.21.0"), "npm 11.21.0+ is required for OIDC dist-tag promotion");

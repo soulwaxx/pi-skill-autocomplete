@@ -59,12 +59,14 @@ npm audit --audit-level=critical
 npm audit --prefix .github/release-tools --audit-level=critical
 ```
 
-For GitHub Actions workflow syntax validation, install actionlint `1.7.11` and verify its archive SHA-256 against the value in `.github/workflows/test.yml`, then run:
+For GitHub Actions workflow syntax validation, install the actionlint version selected in `.github/workflows/test.yml` and verify its archive SHA-256 against the matching upstream release's checksum manifest, then run:
 
 ```sh
 actionlint .github/workflows/*.yml
 ```
 
 `npm run check` runs the test suite, TypeScript check, and Biome lint. Tests run in disposable homes, Pi profiles, and working directories with a small environment-variable allowlist; they use fake providers and make no paid model calls. `npm run test:artifact` packs and unpacks the runtime allowlist, then checks the package using the packed extension. `npm run bench` reports local completion and submission timings. Release verification and recovery tests use fakes; no command above publishes a package or creates a release.
+
+CI tests Linux/macOS on Node 22 and 24. PR metadata edits run only the title check. Renovate maintains dependencies and pinned CI tools through reviewed PRs. Releases reuse verified PR evidence, test the actual versioned package, and publish through npm OIDC with provenance; there is no npm-token fallback.
 
 See [the assessment](docs/assessment.md) for baseline findings, benchmark details, and limitations, and [release operations](docs/releasing.md) for the maintainer-only release and recovery procedures. These documents are in the source repository; the packed npm artifact includes the README, not the `docs/` directory.

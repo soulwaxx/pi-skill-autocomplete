@@ -1,4 +1,4 @@
-name: PR title
+name: PR metadata
 
 on:
   pull_request:
@@ -15,10 +15,14 @@ jobs:
   title:
     name: PR title passed
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require a Conventional Commit title
         env:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
           pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+'
-          printf '%s\n' "$TITLE" | grep -Eq "$pattern"
+          if ! printf '%s\n' "$TITLE" | grep -Eq "$pattern"; then
+            echo '::error::Use a Conventional Commit title, for example: ci: align automation.'
+            exit 1
+          fi
