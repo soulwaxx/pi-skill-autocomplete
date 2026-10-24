@@ -2,29 +2,29 @@
  * Mid-prompt skill autocomplete
  *
  * Lets you reference a skill from anywhere inside a prompt. Type `:` at a token
- * boundary to open a picker of every loaded skill. Model-visible skills become
- * a directive phrase:
+ * boundary to open a picker of every loaded skill. Selecting a completion
+ * inserts an explicit reference:
  *
- *   review this PR, :cod   ->   review this PR, use the `code-review` skill
+ *   review this PR, :cod   ->   review this PR, [[skill:code-review]]
  *
- * Skills with disable-model-invocation are absent from the system prompt, so a
- * directive cannot activate them. Selecting one instead moves its explicit
- * `/skill:name` invocation to the start while preserving the surrounding text.
+ * Authored references are expanded from Pi's registered skill files at
+ * submission time, including skills hidden from model invocation.
  *
  * Harmony contract:
  * - Stacks ONE autocomplete provider on top of pi's built-in one via
  *   ctx.ui.addAutocompleteProvider. Every non-`:` case delegates to the wrapped
  *   provider unchanged, so `@` file and `/` command completion are untouched.
- * - Queries the wrapped built-in provider with `/skill:` to reuse pi's complete
- *   skill registry, including skills hidden from model invocation. The current
- *   system prompt identifies which skills can safely use a directive phrase.
- *   Registers no tools, hooks no model events, writes nothing. TUI-only.
+ * - Expands explicit references only for interactive TUI and RPC user input.
+ *   Skill files are read synchronously at submission, never while typing. No
+ *   skill content is elevated to the system prompt.
  */
 
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { stripFrontmatter } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { expandSkillReferences } from "./skill-reference-parser.ts";
+import { fuzzyMatch } from "@earendil-works/pi-tui";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -34,8 +34,6 @@ import type {
 const TRIGGER = ":";
 const MAX_DESC = 60;
 const SKILL_NAME_CHARS = /[A-Za-z0-9-]/;
-const SKILL_ENTRY =
-	/<skill>\s*<name>([\s\S]*?)<\/name>\s*<description>([\s\S]*?)<\/description>/g;
 // A colon only starts a skill token at a real boundary — never inside
 // `http://`, `12:30`, `key:value`, etc. — so normal typing is not hijacked.
 const BOUNDARY_BEFORE = /[\s(\[{,]/;
@@ -62,80 +60,67 @@ function truncate(text: string): string {
 	return oneLine.length > MAX_DESC ? `${oneLine.slice(0, MAX_DESC - 1)}…` : oneLine;
 }
 
-function unescapeXml(str: string): string {
-	return str
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&apos;/g, "'")
-		.replace(/&amp;/g, "&");
-}
-
 interface LoadedSkill {
 	name: string;
 	description: string;
 }
 
-/** Parse the <available_skills> block from the current system prompt. */
-function loadedSkills(ctx: ExtensionContext): LoadedSkill[] {
-	const prompt = ctx.getSystemPrompt();
-	const skills: LoadedSkill[] = [];
-	for (const m of prompt.matchAll(SKILL_ENTRY)) {
-		skills.push({
-			name: unescapeXml(m[1].trim()),
-			description: unescapeXml(m[2].trim()),
-		});
-	}
-	return skills;
+function loadedSkills(pi: ExtensionAPI): LoadedSkill[] {
+	return pi.getCommands()
+		.filter((command) => command.source === "skill" && command.name.startsWith("skill:"))
+		.map((command) => ({
+			name: command.name.slice("skill:".length),
+			description: command.description ?? "",
+		}));
 }
 
 function makeProvider(
-	ctx: ExtensionContext,
+	pi: ExtensionAPI,
 	current: AutocompleteProvider,
 ): AutocompleteProvider {
-	let allSkillNames = new Set<string>();
+	let generation = 0;
+	const owned = new WeakMap<AutocompleteItem, { generation: number; signal: AbortSignal; lines: string[]; cursorLine: number; cursorCol: number; prefix: string }>();
 
-	const matchSkills = async (
+	const matchSkills = (
 		query: string,
 		signal: AbortSignal,
-	): Promise<AutocompleteItem[]> => {
-		const command = "/skill:";
-		const suggestions = await current.getSuggestions(
-			[command],
-			0,
-			command.length,
-			{ signal, force: false },
-		);
-		const items = (suggestions?.items ?? [])
-			.filter((item) => item.value.startsWith("skill:"))
-			.map((item) => {
-				const name = item.value.slice("skill:".length);
-				return { value: name, label: name, description: item.description };
-			});
-		const available =
-			items.length > 0
-				? items
-				: loadedSkills(ctx).map((skill) => ({
-						value: skill.name,
-						label: skill.name,
-						description: skill.description || undefined,
-					}));
-		allSkillNames = new Set(available.map((item) => item.value));
-
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+	): AutocompleteItem[] => {
+		const generationAtStart = generation;
 		const q = query.toLowerCase();
-		return available
-			.filter(
-				(item) =>
-					q === "" ||
-					item.value.toLowerCase().includes(q) ||
-					item.description?.toLowerCase().includes(q),
-			)
-			.map((item) => ({
-				...item,
-				description: item.description
-					? truncate(item.description)
-					: undefined,
-			}));
+		const ranked = loadedSkills(pi).flatMap((skill) => {
+			const name = skill.name.toLowerCase();
+			const description = skill.description.toLowerCase();
+			let tier: number;
+			if (q === "") tier = 0;
+			else if (name === q) tier = 0;
+			else if (name.startsWith(q)) tier = 1;
+			else if (name.includes(q)) tier = 2;
+			else if (fuzzyMatch(q, name).matches) tier = 3;
+			else if (description.includes(q)) tier = 4;
+			else return [];
+			return [{ skill, tier }];
+		});
+		ranked.sort((a, b) => a.tier - b.tier || (a.skill.name < b.skill.name ? -1 : a.skill.name > b.skill.name ? 1 : 0));
+		if (signal.aborted || generationAtStart !== generation) return [];
+		return ranked.map(({ skill }) => {
+			const item: AutocompleteItem = {
+				value: skill.name,
+				label: skill.name,
+				description: skill.description ? truncate(skill.description) : undefined,
+			};
+			owned.set(item, {
+				generation: generationAtStart,
+				signal,
+				lines: [...lines],
+				cursorLine,
+				cursorCol,
+				prefix: query,
+			});
+			return item;
+		});
 	};
 
 	return {
@@ -149,8 +134,11 @@ function makeProvider(
 		): Promise<AutocompleteSuggestions | null> {
 			const line = lines[cursorLine] ?? "";
 			const token = detectToken(line, cursorCol);
+			generation++;
 			if (token) {
-				const items = await matchSkills(token.query, options.signal);
+				if (options.signal.aborted) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+				const items = matchSkills(token.query, options.signal, lines, cursorLine, cursorCol);
+				if (options.signal.aborted) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 				// Only claim the dropdown when we actually match something (or the
 				// bare colon was typed / Tab forced it); otherwise stay out of the way.
 				if (items.length > 0 || token.query === "" || options.force) {
@@ -163,25 +151,16 @@ function makeProvider(
 		applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
 			const line = lines[cursorLine] ?? "";
 			const token = detectToken(line, cursorCol);
-			if (token && allSkillNames.has(item.value)) {
-				const modelVisible = new Set(loadedSkills(ctx).map((skill) => skill.name));
+			const owner = owned.get(item);
+			if (
+				token && owner && !owner.signal.aborted && owner.generation === generation &&
+				owner.cursorLine === cursorLine && owner.cursorCol === cursorCol &&
+				owner.prefix === prefix && owner.lines.length === lines.length &&
+				owner.lines.every((value, index) => value === lines[index]) &&
+				token.query === prefix
+			) {
 				const next = [...lines];
-				if (!modelVisible.has(item.value)) {
-					const command = `/skill:${item.value} `;
-					next[cursorLine] =
-						line.slice(0, token.colonCol) + line.slice(cursorCol);
-					next[0] = command + (next[0] ?? "");
-					return {
-						lines: next,
-						cursorLine,
-						cursorCol:
-							cursorLine === 0
-								? command.length + token.colonCol
-								: token.colonCol,
-					};
-				}
-
-				const insertion = `use the \`${item.value}\` skill`;
+				const insertion = `[[skill:${item.value}]]`;
 				next[cursorLine] =
 					line.slice(0, token.colonCol) + insertion + line.slice(cursorCol);
 				return {
@@ -203,11 +182,34 @@ function makeProvider(
 }
 
 export default function skillAutocompleteExtension(pi: ExtensionAPI): void {
+	pi.on("input", (event, ctx) => {
+		if ((ctx.mode !== "tui" && ctx.mode !== "rpc") || event.source === "extension") {
+			return { action: "continue" };
+		}
+		try {
+			const expanded = expandSkillReferences(event.text, pi.getCommands(), (path) => {
+				const body = stripFrontmatter(readFileSync(path, "utf8")).trim();
+				return { body, directory: dirname(path) };
+			});
+			return expanded ? { action: "transform", text: expanded.text } : { action: "continue" };
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			const imageWarning = ctx.mode === "tui" && (event.images?.length ?? 0) > 0
+				? " Retry requires relaunching Pi with the original image attachment."
+				: "";
+			try { ctx.ui.notify(`${reason}.${imageWarning}`, "error"); } catch { /* Keep the input blocked if notification fails. */ }
+			try {
+				if (ctx.mode === "tui") ctx.ui.pasteToEditor(event.text);
+				else ctx.ui.setEditorText(event.text);
+			} catch { /* Recovery failure must not submit the rejected input. */ }
+			return { action: "handled" };
+		}
+	});
 	let installed = false;
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (installed || ctx.mode !== "tui") return;
-		ctx.ui.addAutocompleteProvider((current) => makeProvider(ctx, current));
+		ctx.ui.addAutocompleteProvider((current) => makeProvider(pi, current));
 		installed = true;
 	});
 

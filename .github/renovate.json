@@ -1,0 +1,20 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^\\.github/workflows/release\\.yml$"],
+      "matchStrings": ["npm install --global npm@(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "npm",
+      "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^\\.github/workflows/test\\.yml$"],
+      "matchStrings": ["actionlint/releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/actionlint_"],
+      "depNameTemplate": "rhysd/actionlint",
+      "datasourceTemplate": "github-releases"
+    }
+  ]
+}

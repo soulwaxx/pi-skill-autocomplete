@@ -1,0 +1,19 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.6.2/schema.json",
+	"files": {
+		"includes": ["**/extensions/**/*.ts", "**/tests/**/*.mjs"]
+	},
+	"formatter": {
+		"enabled": false
+	},
+	"assist": { "actions": { "source": { "organizeImports": "off" } } },
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"complexity": {
+				"noUselessEscapeInRegex": "off"
+			}
+		}
+	}
+}

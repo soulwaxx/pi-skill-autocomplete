@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      recovery_tag:
+        description: Existing canonical stable tag to recover (for example v0.1.0)
+        required: true
+        type: string
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'soulwaxx/pi-skill-autocomplete' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      trusted_sha: ${{ github.sha }}
+      prepared: ${{ steps.prepare.outputs.prepared }}
+      prepared_tag: ${{ steps.prepare.outputs.tag }}
+      prepared_version: ${{ steps.prepare.outputs.version }}
+      prepared_mode: ${{ steps.prepare.outputs.mode }}
+      prepared_integrity: ${{ steps.prepare.outputs.integrity }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Verify current trusted main source and selected release source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          TRUSTED_SHA: ${{ github.sha }}
+          RECOVERY_TAG: ${{ inputs.recovery_tag }}
+        run: |
+          node .github/release-tools/release-source.mjs verify "$TRUSTED_SHA"
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            [[ "$RECOVERY_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            SHA="$(git rev-parse --verify "${RECOVERY_TAG}^{commit}")"
+            node .github/release-tools/release-source.mjs verify "$SHA"
+          else
+            SHA="$TRUSTED_SHA"
+          fi
+          git merge-base --is-ancestor "$SHA" origin/main
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      - run: npm ci --ignore-scripts
+      - run: npm ci --prefix .github/release-tools --ignore-scripts
+      - run: npm run check && npm run test:feasibility && npm run test:artifact && npm run bench && npm run release:check && npm run test:release
+      - run: npm audit --audit-level=critical
+      - run: npm audit --prefix .github/release-tools --audit-level=critical
+      - name: Prepare and verify exact package bytes without write credentials
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          RECOVERY_TAG: ${{ inputs.recovery_tag }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node .github/release-tools/release.mjs prepare "$SOURCE_SHA" "$RUNNER_TEMP/prepared-release"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.prepare.outputs.prepared == 'true'
+        with:
+          name: prepared-release-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared-release
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    if: github.repository == 'soulwaxx/pi-skill-autocomplete' && github.ref == 'refs/heads/main' && needs.verify.outputs.prepared == 'true'
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.trusted_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Pin npm trusted-publisher CLI
+        run: npm install --global npm@11.21.0 --ignore-scripts
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: prepared-release-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared-release
+      - run: npm ci --prefix .github/release-tools --ignore-scripts
+      - name: Confirm verified main is still current before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_SHA: ${{ needs.verify.outputs.trusted_sha }}
+        run: test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$TRUSTED_SHA"
+      - name: Publish or recover the verified retained artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          TRUSTED_SHA: ${{ needs.verify.outputs.trusted_sha }}
+          SOURCE_SHA: ${{ needs.verify.outputs.source_sha }}
+          PREPARED_TAG: ${{ needs.verify.outputs.prepared_tag }}
+          PREPARED_VERSION: ${{ needs.verify.outputs.prepared_version }}
+          PREPARED_MODE: ${{ needs.verify.outputs.prepared_mode }}
+          PREPARED_INTEGRITY: ${{ needs.verify.outputs.prepared_integrity }}
+          RECOVERY_TAG: ${{ inputs.recovery_tag }}
+        run: node .github/release-tools/publish-prepared.mjs "$RUNNER_TEMP/prepared-release"
