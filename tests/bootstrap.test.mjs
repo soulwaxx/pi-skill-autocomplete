@@ -113,8 +113,12 @@ try {
   await api.publishTarball("@soulwaxx/pi-skill-autocomplete", bytes, { tag: "pi-release-candidate", bootstrapToken: options.bootstrapToken });
   await api.promoteLatest("@soulwaxx/pi-skill-autocomplete", "0.1.0");
   await assert.rejects(() => api.publishTarball("@other/package", bytes, { tag: "pi-release-candidate", bootstrapToken: options.bootstrapToken }));
-  fs.appendFileSync(command, '\nif (args[0] === "publish") { process.stderr.write("simulated publish failure"); process.exit(1); }\n');
-  await assert.rejects(() => api.publishTarball("@soulwaxx/pi-skill-autocomplete", bytes, { tag: "pi-release-candidate", bootstrapToken: options.bootstrapToken }), /simulated publish failure/);
+  fs.appendFileSync(command, '\nif (args[0] === "publish") { process.stderr.write("npm notice tarball contents\\n".repeat(200) + "npm error simulated publish failure"); process.exit(1); }\n');
+  await assert.rejects(() => api.publishTarball("@soulwaxx/pi-skill-autocomplete", bytes, { tag: "pi-release-candidate", bootstrapToken: options.bootstrapToken }), (error) => {
+    assert.match(error.message, /npm error simulated publish failure/, "npm errors must survive verbose tarball notices");
+    assert.ok(error.message.length < 1100, "npm failure diagnostics remain bounded");
+    return true;
+  });
   const calls = fs.readFileSync(log, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
   assert.equal(calls.length, 4);
   assert.equal(calls[0].auth, undefined, "normal publication remains OIDC-only despite ambient bootstrap credentials");
