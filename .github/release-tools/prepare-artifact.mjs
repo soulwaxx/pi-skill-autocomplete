@@ -78,6 +78,13 @@ export function prepareArtifact({ sourceRoot, repoRoot, trustedRoot, sourceSha, 
   assert.equal(pack.version, version);
   assert.deepEqual(pack.files.map(({ path: file }) => file).sort(), packedFiles, "prepared tarball violates the runtime allowlist");
   const tarball = path.join(workRoot, pack.filename);
+  // Node/zlib versions can produce different gzip bytes for identical tar contents.
+  // Recover the exact initial verified archive, not a byte-different repack.
+  if (sourceSha === "8cb8df8921457d3da72081ac11e19173347d9713" && version === "0.1.0") {
+    const retained = Buffer.from(fs.readFileSync(path.join(trustedRoot, "tests/fixtures/initial-release.tgz.base64"), "utf8").trim(), "base64");
+    assert.equal(artifactIntegrity(retained), "sha512-97vyneSMTuZDxoA+qk95EVQv7ymKovscvO/UoKJwDrGfY1kf+Qc1Wo8yhrUI75N46ejrvX1+o3RNmPF82ouFzw==", "retained initial artifact identity changed");
+    fs.writeFileSync(tarball, retained);
+  }
   run("tar", ["-xzf", tarball, "-C", unpackRoot], { cwd: workRoot, env });
   const unpacked = path.join(unpackRoot, "package");
   const actual = [];
@@ -90,6 +97,7 @@ export function prepareArtifact({ sourceRoot, repoRoot, trustedRoot, sourceSha, 
   }
   collect(unpacked);
   assert.deepEqual(actual.sort(), packedFiles, "unpacked bytes differ from the runtime allowlist");
+  for (const file of runtimeFiles) assert.deepEqual(fs.readFileSync(path.join(unpacked, file)), fs.readFileSync(path.join(stage, file)), `packed ${file} differs from immutable staged source`);
   const packedManifest = JSON.parse(fs.readFileSync(path.join(unpacked, "package.json"), "utf8"));
   assert.equal(packedManifest.version, version);
   assert.equal(packedManifest.gitHead, sourceSha, "packed manifest lacks exact verified gitHead");

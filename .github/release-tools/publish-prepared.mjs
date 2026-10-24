@@ -10,7 +10,7 @@ const tagPattern = /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 const shaPattern = /^[0-9a-f]{40}$/;
 const integrityPattern = /^sha512-[A-Za-z0-9+/]{86}==$/;
 
-export async function publishPrepared(directory, { repository, sourceSha, trustedSha, expectedVersion, expectedTag, expectedMode, expectedIntegrity, recoveryTag = null, adapters } = {}) {
+export function readPrepared(directory, { sourceSha, trustedSha, expectedVersion, expectedTag, expectedMode, expectedIntegrity, recoveryTag = null } = {}) {
   assert.equal(path.resolve(directory), directory, "prepared artifact directory must be an absolute normalized path");
   assert.match(directory, /^\/[A-Za-z0-9_./-]+$/, "prepared artifact directory must be an absolute runner path");
   assert.match(sourceSha ?? "", shaPattern);
@@ -49,8 +49,13 @@ export async function publishPrepared(directory, { repository, sourceSha, truste
   assert.ok(stats.size > 0 && stats.size <= 10 * 1024 * 1024, "prepared package tarball is missing or oversized");
   const bytes = fs.readFileSync(tarballPath);
   assert.equal(artifactIntegrity(bytes), info.integrity, "prepared tarball changed after read-only verification");
-  const api = adapters ?? await createAdapters({ repository, trustedSha });
-  return publishRelease({ source: { sha, version, tag }, artifact: { bytes, version, sourceSha: sha, integrity: info.integrity }, packageName: "@soulwaxx/pi-skill-autocomplete" }, api, { mode: info.mode });
+  return { source: { sha, version, tag }, artifact: { bytes, version, sourceSha: sha, integrity: info.integrity }, mode: info.mode };
+}
+
+export async function publishPrepared(directory, options = {}) {
+  const { source, artifact, mode } = readPrepared(directory, options);
+  const api = options.adapters ?? await createAdapters({ repository: options.repository, trustedSha: options.trustedSha });
+  return publishRelease({ source, artifact, packageName: "@soulwaxx/pi-skill-autocomplete" }, api, { mode });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
