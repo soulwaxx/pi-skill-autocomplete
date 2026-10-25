@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { expectedSkillContextPrefix } from "./skill-context-expectations.mjs";
 
 const extensionPath = process.argv[2] ?? new URL("../extensions/skill-autocomplete.ts", import.meta.url).pathname;
 const parserPath = process.argv[3] ?? new URL("../extensions/skill-reference-parser.ts", import.meta.url).pathname;
 const { default: skillAutocompleteExtension } = await import(pathToFileURL(extensionPath));
 const { expandSkillReferences, scanSkillReferences } = await import(pathToFileURL(parserPath));
 
+const contextPrefix = expectedSkillContextPrefix(dirname(dirname(parserPath)));
 const names = (text) => scanSkillReferences(text).map(({ name }) => name);
 
 test("scans active references in first-occurrence order and skips escaped references", () => {
@@ -79,6 +81,23 @@ test("resolves only registered skills, deduplicates first-reference order, and p
   assert.throws(() => expandSkillReferences("[[skill:unknown]]", commands, readSkill), /Unknown registered skill/);
 });
 
+test("preserves complete skill bodies with the context expected for the tested release", () => {
+  const commands = [{ name: "skill:grilling", source: "skill", sourceInfo: { path: "/skills/grilling/SKILL.md" } }];
+  const authored = "Define requirements using [[skill:grilling]] [[skill:grilling]]";
+  const body = "Ask one question at a time.\nSee references/interview.md and literal [[skill:missing]].";
+  let reads = 0;
+  const expanded = expandSkillReferences(authored, commands, () => {
+    reads++;
+    return { body, directory: "/skills/grilling" };
+  });
+  assert.equal(reads, 1);
+  assert.equal(expanded.text, `${authored}${contextPrefix}\n\n--- Skill grilling (references relative to /skills/grilling) ---\n${body}`);
+  assert.deepEqual(expanded.loaded, [{ name: "grilling", body, directory: "/skills/grilling" }]);
+  assert.equal(expandSkillReferences("No active reference: `[[skill:grilling]]`", commands, () => {
+    assert.fail("literal references must not load skills or add loading guidance");
+  }), undefined);
+});
+
 test("counts unique UTF-8 body bytes after caller-provided frontmatter stripping at exact limit", () => {
   const commands = [{ name: "skill:large", source: "skill", sourceInfo: { path: "/large/SKILL.md" } }];
   const body = "é".repeat(65536);
@@ -110,7 +129,7 @@ test("the production input hook transforms active TUI/RPC references and leaves 
     const event = { text: "before [[skill:alpha]] after", source: "interactive", images: [{ type: "image", data: "x", mimeType: "image/png" }] };
     const result = handler(event, ctx("tui"));
     assert.equal(result.action, "transform");
-    assert.equal(result.text, `${event.text}\n\n--- Skill alpha (references relative to ${root}) ---\nFull registered body.`);
+    assert.equal(result.text, `${event.text}${contextPrefix}\n\n--- Skill alpha (references relative to ${root}) ---\nFull registered body.`);
     assert.ok(result.text.includes("Full registered body."));
     const literalUnknownAndActive = handler({ ...event, text: "`[[skill:missing]]\\` [[skill:alpha]]" }, ctx("rpc"));
     assert.equal(literalUnknownAndActive.action, "transform", "unknown reference inside code is literal while the following active reference loads");

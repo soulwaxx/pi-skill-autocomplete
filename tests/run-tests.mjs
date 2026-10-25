@@ -19,6 +19,7 @@ function assertSucceeded(result, label) {
 }
 
 for (const [script, args] of [
+  ["skill-context-expectations.test.mjs", []],
   ["skill-autocomplete.mjs", [extension]],
   ["skill-references.mjs", [extension, parser]],
 ]) {
