@@ -116,5 +116,6 @@ export function expandSkillReferences(
   const additions = loaded.map(({ name, directory, body }) =>
     `\n\n--- Skill ${name} (references relative to ${directory}) ---\n${body}`,
   ).join("");
-  return { text: `${text}${additions}`, loaded };
+  const loadingNotice = "The following referenced skills are already loaded. Follow these instructions directly; do not read their SKILL.md files again unless explicitly asked to reload them. You may read supporting files referenced by these skills as needed.";
+  return { text: `${text}\n\n${loadingNotice}${additions}`, loaded };
 }

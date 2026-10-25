@@ -4,9 +4,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { deflateSync } from "node:zlib";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { expectedSkillContextPrefix } from "./skill-context-expectations.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const agentDir = process.env.PI_CODING_AGENT_DIR;
+const settings = JSON.parse(await readFile(`${agentDir}/settings.json`, "utf8"));
+const contextPrefix = expectedSkillContextPrefix(settings.packages[0]);
 await mkdir(`${agentDir}/skills/alpha`, { recursive: true });
 await mkdir(`${agentDir}/skills/beta`, { recursive: true });
 await mkdir(`${agentDir}/skills/gamma`, { recursive: true });
@@ -173,7 +176,7 @@ try {
   const user = providerCalls[0].messages.findLast((message) => message.role === "user");
   const userText = textOf(user);
   const expectedAuthored = "resubmit [[skill:beta]] then [[skill:alpha]] and [[skill:beta]]";
-  const expectedExpanded = `${expectedAuthored}\n\n--- Skill beta (references relative to ${agentDir}/skills/beta) ---\nRPC BETA FULL BODY SENTINEL\n\n--- Skill alpha (references relative to ${agentDir}/skills/alpha) ---\nRPC ALPHA FULL BODY SENTINEL; literal [[skill:beta]]`;
+  const expectedExpanded = `${expectedAuthored}${contextPrefix}\n\n--- Skill beta (references relative to ${agentDir}/skills/beta) ---\nRPC BETA FULL BODY SENTINEL\n\n--- Skill alpha (references relative to ${agentDir}/skills/alpha) ---\nRPC ALPHA FULL BODY SENTINEL; literal [[skill:beta]]`;
   assert.equal(userText, expectedExpanded, "provider receives exact authored input plus complete deduplicated bodies in first-reference order");
   assert.ok(JSON.stringify(user.content).includes("RPC ALPHA FULL BODY SENTINEL"));
   assert.ok(JSON.stringify(user.content).includes("RPC BETA FULL BODY SENTINEL"));
@@ -205,7 +208,7 @@ try {
   assert.ok(textOf(inlineCodeProvider.messages.findLast((message) => message.role === "user")).includes("RPC ALPHA FULL BODY SENTINEL"), "active reference after the code span loads its body");
   const exactBody = providerCalls.find((entry) => textOf(entry.messages.findLast((message) => message.role === "user")).includes("é".repeat(32)));
   assert.ok(exactBody, "exact 131072-byte UTF-8 body reaches the provider");
-  assert.equal(textOf(exactBody.messages.findLast((message) => message.role === "user")), `[[skill:gamma]] [[skill:gamma]]\n\n--- Skill gamma (references relative to ${agentDir}/skills/gamma) ---\n${"é".repeat(65536)}`, "complete byte-boundary body equals the provider-visible expansion");
+  assert.equal(textOf(exactBody.messages.findLast((message) => message.role === "user")), `[[skill:gamma]] [[skill:gamma]]${contextPrefix}\n\n--- Skill gamma (references relative to ${agentDir}/skills/gamma) ---\n${"é".repeat(65536)}`, "complete byte-boundary body equals the provider-visible expansion");
   assert.ok(!providerCalls.some((entry) => JSON.stringify(entry.messages).includes("ui-fail:")));
   assert.ok(Buffer.byteLength("é".repeat(65536), "utf8") === 131072, "full fixture body is at the configured byte boundary");
   assert.ok(!providerCalls.some((entry) => JSON.stringify(entry.messages).includes("[[skill:beta]] [[skill:delta]]")), "oversize multi-reference request does not reach provider with partial body content");
