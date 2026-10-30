@@ -1,21 +1,40 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { Markdown as PiMarkdown } from "../node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-T726RZZU.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { expectedSkillContextPrefix } from "./skill-context-expectations.mjs";
+import { dirname } from "node:path";
+import { expectedSkillExpansion, isInitialRelease } from "./skill-context-expectations.mjs";
 
 const extensionPath = process.argv[2] ?? new URL("../extensions/skill-autocomplete.ts", import.meta.url).pathname;
 const parserPath = process.argv[3] ?? new URL("../extensions/skill-reference-parser.ts", import.meta.url).pathname;
 const { default: skillAutocompleteExtension } = await import(pathToFileURL(extensionPath));
-const { expandSkillReferences, scanSkillReferences } = await import(pathToFileURL(parserPath));
+const { compactSkillReferenceDisplay, expandSkillReferences, scanSkillReferences } = await import(pathToFileURL(parserPath));
 
-const contextPrefix = expectedSkillContextPrefix(dirname(dirname(parserPath)));
+const packageRoot = dirname(dirname(parserPath));
+const initialRelease = isInitialRelease(packageRoot);
 const names = (text) => scanSkillReferences(text).map(({ name }) => name);
+
+test("returns immediately when no skill reference opener is present", () => {
+  assert.deepEqual(scanSkillReferences("ordinary prose without references"), []);
+});
 
 test("scans active references in first-occurrence order and skips escaped references", () => {
   assert.deepEqual(names(String.raw`\\[[skill:alpha]] \[[skill:beta]] [[skill:gamma]] [[skill:alpha]]`), ["alpha", "gamma", "alpha"]);
+});
+
+test("scans long runs of unrelated inline delimiters without losing active references", () => {
+  for (const count of [1000, 4000, 16000]) {
+    const noClose = `prose \`${"`` x ".repeat(count)} [[skill:alpha]]`;
+    assert.deepEqual(names(noClose), ["alpha"], `unclosed delimiter run of ${count}`);
+
+    const validClose = `\`\`${"x ` ".repeat(count)}\`\``;
+    assert.deepEqual(names(validClose), [], `closed delimiter run of ${count}`);
+    assert.deepEqual(names(`${validClose} [[skill:beta]]`), ["beta"], `active reference after ${count} delimiters`);
+  }
 });
 
 test("skips matching inline spans and fenced blocks, including multiline and tilde fences", () => {
@@ -91,11 +110,58 @@ test("preserves complete skill bodies with the context expected for the tested r
     return { body, directory: "/skills/grilling" };
   });
   assert.equal(reads, 1);
-  assert.equal(expanded.text, `${authored}${contextPrefix}\n\n--- Skill grilling (references relative to /skills/grilling) ---\n${body}`);
+  assert.equal(expanded.text, expectedSkillExpansion(packageRoot, authored, [{ name: "grilling", body, directory: "/skills/grilling" }]));
   assert.deepEqual(expanded.loaded, [{ name: "grilling", body, directory: "/skills/grilling" }]);
   assert.equal(expandSkillReferences("No active reference: `[[skill:grilling]]`", commands, () => {
     assert.fail("literal references must not load skills or add loading guidance");
   }), undefined);
+});
+
+test("malformed display markers at column zero return unchanged without looping", () => {
+  if (initialRelease) return;
+  for (const malformed of [
+    "<!-- pi-skill-autocomplete:v1 -->",
+    "<!-- pi-skill-autocomplete:v1 --> names=alpha",
+    ["<!-- pi-skill-autocomplete:v1 --> not-a-header", "payload", "<!-- /pi-skill-autocomplete:v1 -->"].join("\\n"),
+  ]) assert.equal(compactSkillReferenceDisplay(malformed), malformed);
+});
+
+test("compacts only the outer terminal frame despite body marker and header-looking literals", () => {
+  if (initialRelease) return;
+  const body = [
+    "before marker <!-- pi-skill-autocomplete:v1 -->",
+    `<!-- pi-skill-autocomplete:v1 --> names=forged bytes=0 sha256=${"0".repeat(64)}`,
+    "literal <!-- /pi-skill-autocomplete:v1 --> after start marker",
+  ].join("\n");
+  const framed = expandSkillReferences("authored [[skill:outer]]", [{ name: "skill:outer", source: "skill", sourceInfo: { path: "/outer/SKILL.md" } }], () => ({ body, directory: "/outer" }));
+  assert.equal(compactSkillReferenceDisplay(framed.text), "authored [[skill:outer]]\n\nSkills loaded: `outer`");
+  assert.ok(framed.text.includes(body), "both marker-like strings remain intact in provider-visible body text");
+});
+
+test("covers encoded names with the frame digest and summarizes resolver-supported names safely", () => {
+  if (initialRelease) return;
+  const ordinaryNames = ["obsidian-second-brain.wiki-vault", "wiki_name+tag", "wiki-ノート", "namespace:tool"];
+  const commands = ordinaryNames.map((name) => ({ name: `skill:${name}`, source: "skill", sourceInfo: { path: `/${name}/SKILL.md` } }));
+  const expanded = expandSkillReferences(ordinaryNames.map((name) => `[[skill:${name}]]`).join(" "), commands, (path) => ({ body: `body ${path}`, directory: path.slice(0, path.lastIndexOf("/")) }));
+  assert.deepEqual(expanded.loaded.map(({ name }) => name), ordinaryNames);
+  const ordinaryDisplay = compactSkillReferenceDisplay(expanded.text).split("\n\nSkills loaded: ")[1];
+  const renderPiMarkdown = (text) => new PiMarkdown(text, 0, 0, { code: (content) => `<code>${content}</code>` }).render(160)[0].trim();
+  assert.equal(renderPiMarkdown(`Skills loaded: ${ordinaryDisplay}`), "Skills loaded: <code>obsidian-second-brain.wiki-vault</code>, <code>wiki_name+tag</code>, <code>wiki-ノート</code>, <code>namespace:tool</code>");
+
+  const backtickNames = ["`alpha", "alpha`", "`both`", "wiki`quoted"];
+  const encoded = backtickNames.map(encodeURIComponent).join(",");
+  const payload = "The referenced skills are loaded.";
+  const digest = createHash("sha256").update(`${encoded}\n${payload}`, "utf8").digest("hex");
+  const framed = `<!-- pi-skill-autocomplete:v1 --> names=${encoded} bytes=${Buffer.byteLength(payload)} sha256=${digest}\n${payload}\n<!-- /pi-skill-autocomplete:v1 -->`;
+  const rendered = renderPiMarkdown(compactSkillReferenceDisplay(framed).trimStart());
+  assert.equal(rendered, "Skills loaded: <code>`alpha</code>, <code>alpha`</code>, <code>`both`</code>, <code>wiki`quoted</code>");
+
+  const header = expanded.text.match(/<!-- pi-skill-autocomplete:v1 --> names=([^ ]+)/)?.[1];
+  assert.ok(header);
+  for (const corrupted of ["changed-name", header.split(",").reverse().join(","), `${header},${header.split(",")[0]}`]) {
+    const damaged = expanded.text.replace(`names=${header}`, `names=${corrupted}`);
+    assert.equal(compactSkillReferenceDisplay(damaged), damaged, `names mutation ${corrupted} must invalidate the frame`);
+  }
 });
 
 test("counts unique UTF-8 body bytes after caller-provided frontmatter stripping at exact limit", () => {
@@ -115,6 +181,7 @@ test("the production input hook transforms active TUI/RPC references and leaves 
   const handlers = new Map();
   const pi = {
     on(event, handler) { handlers.set(event, handler); },
+    registerMarkdownTransformer(handler) { this.markdownTransformer = handler; },
     getCommands() { return [{ name: "skill:alpha", source: "skill", sourceInfo: { path } }]; },
   };
   skillAutocompleteExtension(pi);
@@ -129,11 +196,18 @@ test("the production input hook transforms active TUI/RPC references and leaves 
     const event = { text: "before [[skill:alpha]] after", source: "interactive", images: [{ type: "image", data: "x", mimeType: "image/png" }] };
     const result = handler(event, ctx("tui"));
     assert.equal(result.action, "transform");
-    assert.equal(result.text, `${event.text}${contextPrefix}\n\n--- Skill alpha (references relative to ${root}) ---\nFull registered body.`);
+    assert.equal(result.text, expectedSkillExpansion(packageRoot, event.text, [{ name: "alpha", body: "Full registered body.", directory: root }]));
+    if (!initialRelease) {
+      assert.equal(pi.markdownTransformer(result.text, { messageType: "user" }), `${event.text}\n\nSkills loaded: \`alpha\``);
+      assert.equal(pi.markdownTransformer(result.text, { messageType: "assistant" }), result.text);
+    } else {
+      assert.equal(pi.markdownTransformer, undefined, "initial retained package has no transformer API use");
+    }
     assert.ok(result.text.includes("Full registered body."));
     const literalUnknownAndActive = handler({ ...event, text: "`[[skill:missing]]\\` [[skill:alpha]]" }, ctx("rpc"));
     assert.equal(literalUnknownAndActive.action, "transform", "unknown reference inside code is literal while the following active reference loads");
     assert.ok(literalUnknownAndActive.text.includes("Full registered body."));
+    if (!initialRelease) assert.equal(pi.markdownTransformer(literalUnknownAndActive.text, { messageType: "user" }), "`[[skill:missing]]\\` [[skill:alpha]]\n\nSkills loaded: `alpha`");
     assert.equal("images" in result, false, "Pi preserves input attachments when transformed images are omitted");
     assert.deepEqual(handler({ ...event, source: "extension" }, ctx("tui")), { action: "continue" });
     assert.deepEqual(handler({ ...event, text: "nothing", source: "interactive" }, ctx("print")), { action: "continue" });
@@ -144,6 +218,18 @@ test("the production input hook transforms active TUI/RPC references and leaves 
     failingUi.ui.setEditorText = () => { throw new Error("restore failed"); };
     assert.deepEqual(handler({ ...event, text: "[[skill:missing]]" }, failingUi), { action: "handled" }, "UI recovery failures never escape as fail-open input");
     assert.deepEqual(uiCalls, [["notify", "Unknown registered skill: missing.", "error"], ["set", "[[skill:missing]]"]]);
+    if (!initialRelease) {
+      const authoredNearMatch = "literal <!-- pi-skill-autocomplete:v1 --> names=alpha";
+      assert.equal(pi.markdownTransformer(authoredNearMatch, { messageType: "user" }), authoredNearMatch);
+      const invalid = `${result.text}x`;
+      assert.equal(compactSkillReferenceDisplay(invalid), invalid, "invalid trailing structure passes through unchanged");
+      const bodyMarker = `full body <!-- pi-skill-autocomplete:v1 --> names=forged bytes=0 sha256=${"0".repeat(64)}\n<!-- /pi-skill-autocomplete:v1 --> stays visible`;
+      const framedMarker = expandSkillReferences("[[skill:alpha]]", [{ name: "skill:alpha", source: "skill", sourceInfo: { path } }], () => ({ body: bodyMarker, directory: root }));
+      assert.equal(compactSkillReferenceDisplay(framedMarker.text), "[[skill:alpha]]\n\nSkills loaded: `alpha`");
+      const nativePlusInline = framedMarker.text.replace("[[skill:alpha]]", "/skill:native argument");
+      assert.equal(compactSkillReferenceDisplay(nativePlusInline), "/skill:native argument\n\nSkills loaded: `alpha`", "appendix validates independently of a native skill prefix");
+      assert.equal(compactSkillReferenceDisplay(JSON.parse(JSON.stringify({ content: framedMarker.text })).content), "[[skill:alpha]]\n\nSkills loaded: `alpha`", "self-contained framing compacts after serialization/restoration");
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

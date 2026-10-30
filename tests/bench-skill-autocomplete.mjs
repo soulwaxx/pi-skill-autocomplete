@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
@@ -8,7 +9,7 @@ import { syncBuiltinESMExports } from "node:module";
 const extensionPath = process.argv[2];
 if (!extensionPath) throw new Error("skill autocomplete extension path required");
 const { default: extension } = await import(pathToFileURL(extensionPath));
-const { expandSkillReferences } = await import("../extensions/skill-reference-parser.ts");
+const { expandSkillReferences, scanSkillReferences } = await import("../extensions/skill-reference-parser.ts");
 const piTui = await import("@earendil-works/pi-tui");
 const signal = new AbortController().signal;
 const results = [];
@@ -37,7 +38,7 @@ for (const size of [10, 100, 1000]) {
   }));
   let provider;
   let wrappedSearches = 0;
-  const pi = { on(event, handler) { if (event === "session_start") this.start = handler; }, getCommands() { return commands; } };
+  const pi = { on(event, handler) { if (event === "session_start") this.start = handler; }, registerMarkdownTransformer() {}, getCommands() { return commands; } };
   const ctx = { mode: "tui", ui: { addAutocompleteProvider(factory) { provider = factory({ triggerCharacters: [], async getSuggestions() { wrappedSearches++; return null; }, applyCompletion() { throw new Error("unexpected delegation"); } }); } } };
   extension(pi);
   await pi.start({}, ctx);
@@ -50,6 +51,30 @@ for (const size of [10, 100, 1000]) {
   }
   results.push({ registrySize: size, typing: summarize(samples), wrappedSkillSearches: wrappedSearches, observedNodeReadFileSyncCalls: typingReadCalls });
 }
+
+const scannerResults = [];
+for (const count of [1000, 4000, 16000]) {
+  const noClose = `prose \`${"`` x ".repeat(count)}`;
+  const closed = `\`\`${"x ` ".repeat(count)}\`\``;
+  const cases = [
+    { label: "unclosed-delimiter-run", text: noClose, expected: [] },
+    { label: "unclosed-delimiter-run-with-reference", text: `${noClose} [[skill:alpha]]`, expected: ["alpha"] },
+    { label: "closed-delimiter-run", text: closed, expected: [] },
+    { label: "closed-delimiter-run-with-reference", text: `${closed} [[skill:alpha]]`, expected: ["alpha"] },
+  ];
+  for (const benchCase of cases) {
+    const samples = [];
+    for (let run = 0; run < 7; run++) {
+      const start = performance.now();
+      const references = scanSkillReferences(benchCase.text);
+      const elapsed = performance.now() - start;
+      assert.deepEqual(references.map(({ name }) => name), benchCase.expected);
+      if (run > 0) samples.push(elapsed);
+    }
+    scannerResults.push({ delimiterCount: count, case: benchCase.label, scan: summarize(samples) });
+  }
+}
+results.push({ scannerAdversarial: scannerResults, note: "7 runs per case; first run excluded; timings are observational and have no pass/fail threshold" });
 
 const body = "x".repeat(4096);
 for (const references of [1, 10, 25]) {
@@ -81,7 +106,7 @@ function makeProductionInputCase(count, bodySize) {
     references.push(`[[skill:measure-${index}]]`);
   }
   const handlers = [];
-  const pi = { on(event, handler) { if (event === "input") handlers.push(handler); }, getCommands() { return commands; } };
+  const pi = { on(event, handler) { if (event === "input") handlers.push(handler); }, registerMarkdownTransformer() {}, getCommands() { return commands; } };
   extension(pi);
   return { handler: handlers[0], commands, text: references.join(" "), paths: commands.map((command) => command.sourceInfo.path) };
 }

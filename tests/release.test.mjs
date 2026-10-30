@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -58,6 +58,27 @@ try {
   assert.deepEqual(adapterWrites.map(({ body }) => body), [{ ref: "refs/tags/v0.1.0", sha: sha(3) }, { tag_name: "v0.1.0", target_commitish: sha(3), name: "v0.1.0", body: "", draft: false, prerelease: false }]);
   assert.ok(adapterWrites.every(({ token }) => token === "Bearer mock-token"), "GitHub mutations use the workflow token");
   assert.ok(adapterUrls.every((url) => url.startsWith("https://api.github.com/") || url.startsWith("https://registry.npmjs.org/")), "adapter requests remain pinned to the official API origins");
+  const tarballCalls = [];
+  globalThis.fetch = async (url, options) => { tarballCalls.push({ url: String(url), options }); return new Response("mock tarball"); };
+  assert.equal((await remote.readNpmTarball("https://registry.npmjs.org/@fixture/pkg/-/pkg-0.1.0.tgz")).toString(), "mock tarball");
+  assert.equal(tarballCalls[0].options.redirect, "error");
+  assert.equal(new Headers(tarballCalls[0].options.headers).get("authorization"), null, "registry tarball request sends no credentials");
+  await assert.rejects(() => remote.readNpmTarball("http://registry.npmjs.org/pkg.tgz"), /approved registry HTTPS origin/);
+  await assert.rejects(() => remote.readNpmTarball("https://evil.example/pkg.tgz"), /approved registry HTTPS origin/);
+  await assert.rejects(() => remote.readNpmTarball("https://user:secret@registry.npmjs.org/pkg.tgz"), /without URL credentials/);
+  let rejectedBodyCanceled = false;
+  globalThis.fetch = async () => new Response(new ReadableStream({ cancel() { rejectedBodyCanceled = true; } }), { status: 302 });
+  await assert.rejects(() => remote.readNpmTarball("https://registry.npmjs.org/pkg.tgz"), /HTTP 302/);
+  assert.equal(rejectedBodyCanceled, true, "non-success registry response body is canceled");
+  globalThis.fetch = async () => new Response(new ReadableStream({ cancel() { rejectedBodyCanceled = true; } }), { status: 200, headers: { "content-length": String(10 * 1024 * 1024 + 1) } });
+  await assert.rejects(() => remote.readNpmTarball("https://registry.npmjs.org/pkg.tgz"), /exceeds 10485760 bytes/);
+  assert.equal(rejectedBodyCanceled, true, "oversized declared registry body is canceled");
+  globalThis.fetch = async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(10 * 1024 * 1024)); controller.enqueue(new Uint8Array(1)); controller.close(); } }));
+  await assert.rejects(() => remote.readNpmTarball("https://registry.npmjs.org/pkg.tgz"), /exceeds 10485760 bytes/);
+  globalThis.fetch = async () => new Response(null, { status: 200 });
+  await assert.rejects(() => remote.readNpmTarball("https://registry.npmjs.org/pkg.tgz"), /empty/);
+  globalThis.fetch = async (_url, { signal }) => new Response(new ReadableStream({ start(controller) { signal.addEventListener("abort", () => controller.error(new Error("aborted")), { once: true }); } }));
+  await assert.rejects(() => createAdapters({ repository: "fixture/project", token: "mock-token", requestTimeoutMs: 10 }).then((api) => api.readNpmTarball("https://registry.npmjs.org/pkg.tgz")), /aborted/);
   globalThis.fetch = async () => new Response("missing", { status: 404 });
   const absentAdapter = await createAdapters({ repository: "fixture/project", token: "mock-token" });
   assert.equal(await absentAdapter.readNpm("@fixture/pkg", "0.1.0"), null, "only exact HTTP 404 is absence on reads");
@@ -105,7 +126,7 @@ try {
 // Source-evidence predicate tests remain part of this slice.
 const fixedNow = Date.parse("2026-02-01T00:00:00.000Z");
 const pr = { number: 8, head: { sha: sha(1) }, merged_at: "2026-01-31", merge_commit_sha: sha(3), base: { ref: "main", repo: { full_name: "fixture/project" } } };
-const run = { id: 90, run_attempt: 2, created_at: "2026-01-31T00:00:00.000Z", repository: { full_name: "fixture/project" }, path: ".github/workflows/test.yml", event: "pull_request", head_sha: sha(1), status: "completed", conclusion: "success" };
+const run = { id: 90, run_attempt: 2, created_at: "2025-12-01T00:00:00.000Z", run_started_at: "2026-01-31T00:00:00.000Z", repository: { full_name: "fixture/project" }, path: ".github/workflows/test.yml", event: "pull_request", head_sha: sha(1), status: "completed", conclusion: "success" };
 const proof = { repository: "fixture/project", workflow: ".github/workflows/test.yml", event: "pull_request", runId: 90, runAttempt: 2, pr: 8, headSha: sha(1), baseSha: sha(2), testedSha: sha(4), tree: sha(5), parents: [sha(2), sha(1)], createdAt: "2026-01-31T00:00:01.000Z" };
 const git = (...args) => {
   if (args[0] === "show" && args[1] === "-s" && args[2] === "--format=%s") return "feat: add feature";
@@ -114,7 +135,7 @@ const git = (...args) => {
   if (args[0] === "show" && args[2] === "--format=%P") return sha(2);
   throw Error(`unexpected git ${args}`);
 };
-const api = async (route) => route.includes("/pulls?") ? [pr] : route.includes("/workflows/") ? { workflow_runs: [run] } : { sha: sha(4), tree: { sha: sha(5) }, parents: [{ sha: sha(2) }, { sha: sha(1) }] };
+const api = async (route) => route.includes("/pulls?") ? [pr] : route.includes("/workflows/") ? { workflow_runs: [run] } : route.includes("/attempts/") ? run : { sha: sha(4), tree: { sha: sha(5) }, parents: [{ sha: sha(2) }, { sha: sha(1) }] };
 const result = await verifySource({ repository: "fixture/project", sha: sha(3), git, api, evidence: async () => proof, now: fixedNow });
 assert.equal(result.runId, 90);
 const evidenceFixture = path.join(os.tmpdir(), `release-evidence-${process.pid}.json`);
@@ -154,12 +175,28 @@ try {
   assert.deepEqual(JSON.parse(fs.readFileSync(fixtureProof, "utf8")).parents, [baseParent, headParent]);
 } finally { fs.rmSync(mergeFixture, { recursive: true, force: true }); }
 
-await assert.rejects(() => githubEvidence("fixture/project", run, pr, { api: () => ({ artifacts: [{ id: 9, name: "verified-source-2", expired: true, size_in_bytes: 128, created_at: run.created_at, workflow_run: { id: run.id } }] }), now: fixedNow }), /missing, oversized, or expired/);
+const officialArtifact = { id: 9, name: "verified-source-2", expired: false, size_in_bytes: 128, created_at: run.run_started_at, workflow_run: { id: run.id, repository_id: 1, head_repository_id: 1, head_branch: "feature", head_sha: pr.head.sha } };
+let evidenceExecuteCalls = 0;
+const evidenceExecute = (command, args) => {
+  evidenceExecuteCalls++;
+  if (command === "gh") return Buffer.from("zip fixture");
+  assert.equal(command, "python3");
+  assert.equal(args[0], "-c");
+  return JSON.stringify(proof);
+};
+assert.deepEqual(await githubEvidence("fixture/project", run, pr, { api: () => ({ artifacts: [officialArtifact] }), execute: evidenceExecute, now: fixedNow }), proof, "real artifact schema without run_attempt binds by exact artifact name and downloaded proof");
+assert.equal(evidenceExecuteCalls, 2);
+await assert.rejects(() => githubEvidence("fixture/project", run, pr, { api: () => ({ artifacts: [{ ...officialArtifact, name: "verified-source-1" }] }), execute: evidenceExecute, now: fixedNow }), /missing, oversized, or expired/);
+await assert.rejects(() => githubEvidence("fixture/project", run, pr, { api: () => ({ artifacts: [{ ...officialArtifact, expired: true }] }), execute: evidenceExecute, now: fixedNow }), /missing, oversized, or expired/);
+await assert.rejects(() => githubEvidence("fixture/project", run, pr, { api: () => ({ artifacts: [officialArtifact] }), execute: (command) => command === "gh" ? Buffer.from("zip") : JSON.stringify({ ...proof, runAttempt: 1 }), now: fixedNow }), /runAttempt/);
 for (const invalid of [{ ...proof, tree: sha(6) }, { ...proof, runAttempt: 1 }, { ...proof, baseSha: sha(7) }, { ...proof, workflow: "other.yml" }, { ...proof, repository: "attacker/project" }, { ...proof, createdAt: "2025-12-01T00:00:00.000Z" }, { ...proof, createdAt: "2026-02-01T00:10:00.000Z" }]) {
   assert.throws(() => validateEvidence(invalid, { repository: "fixture/project", run, pr, tree: sha(5), parent: sha(2), testedSha: sha(4) }, fixedNow));
 }
 await assert.rejects(() => verifySource({ repository: "fixture/project", sha: sha(3), git, api: async (route) => route.includes("/pulls?") ? [] : api(route), evidence: async () => proof, now: fixedNow }));
 await assert.rejects(() => verifySource({ repository: "fixture/project", sha: sha(3), git: (...args) => args[0] === "show" && args[2] === "--format=%P" ? `${sha(2)} ${sha(8)}` : git(...args), api, evidence: async () => proof, now: fixedNow }));
+for (const attempt of [{ ...run, run_started_at: "2025-12-01T00:00:00.000Z" }, { ...run, run_started_at: "2026-02-01T00:10:00.000Z" }, { ...run, run_attempt: 1 }]) {
+  await assert.rejects(() => verifySource({ repository: "fixture/project", sha: sha(3), git, api: async (route) => route.includes("/attempts/") ? attempt : api(route), evidence: async () => proof, now: fixedNow }));
+}
 await assert.rejects(() => verifySource({ repository: "fixture/project", sha: sha(3), git, api: async () => { throw Object.assign(new Error("forbidden"), { status: 403 }); }, evidence: async () => proof, now: fixedNow }), /forbidden/);
 await assert.rejects(() => verifySource({ repository: "fixture/project", sha: sha(3), git, api: async (route) => route.includes("/git/commits/") ? { sha: sha(4), tree: { sha: sha(6) }, parents: [{ sha: sha(2) }, { sha: sha(1) }] } : api(route), evidence: async () => proof, now: fixedNow }));
 
@@ -345,6 +382,43 @@ await publishRelease({ source: olderSource, artifact: olderArtifact, packageName
 assert.ok(!race.writes.some((write) => write.startsWith("latest:")), "fresh newer latest is not downgraded");
 await noMutationAfterInvalid((state) => { state.distTags = { latest: "1.0.0" }; state.latestMetadata = { version: "1.0.0", gitHead: sha(6), dist: { integrity: "sha512-YWJjZA==" } }; });
 
+// Archive safety matrix covers effective member types/paths, limits, cleanup and gzip-independent contents.
+const archiveFixtures = fs.mkdtempSync(path.join(os.tmpdir(), "pi-release-archive-fixtures-"));
+try {
+  const archiveScript = `import gzip,io,os,tarfile,sys\nroot=sys.argv[1]\nfiles={'LICENSE':b'license','README.md':b'readme','extensions/skill-autocomplete.ts':b'one','extensions/skill-reference-parser.ts':b'two','package.json':b'{}'}\ndef make(name, kind='valid', mtime=0):\n p=os.path.join(root,name)\n with open(p,'wb') as raw:\n  with gzip.GzipFile(fileobj=raw,mode='wb',mtime=mtime) as gz:\n   with tarfile.open(fileobj=gz,mode='w',format=tarfile.PAX_FORMAT) as t:\n    if kind=='dirs':\n     for n in ('package/','package/extensions/'):\n      i=tarfile.TarInfo(n); i.type=tarfile.DIRTYPE; t.addfile(i)\n    for n,data in files.items():\n     if kind=='oversize-content' and n=='LICENSE': data=b'x'*11\n     i=tarfile.TarInfo('package/'+n); i.size=len(data); t.addfile(i,io.BytesIO(data))\n     if kind=='duplicate' and n=='LICENSE': t.addfile(i,io.BytesIO(data))\n    if kind in ('traversal','absolute','backslash','unexpected','unexpected-dir','symlink','hardlink','fifo','sparse'):\n     names={'traversal':'package/../../outside','absolute':'/tmp/outside','backslash':'package\\\\..\\\\outside','unexpected':'package/extra','unexpected-dir':'package/other/','symlink':'package/extra','hardlink':'package/extra','fifo':'package/extra','sparse':'package/extra'}\n     n=names[kind]; i=tarfile.TarInfo(n)\n     if kind=='unexpected-dir': i.type=tarfile.DIRTYPE\n     elif kind=='symlink': i.type=tarfile.SYMTYPE; i.linkname='../../outside'\n     elif kind=='hardlink': i.type=tarfile.LNKTYPE; i.linkname='package/LICENSE'\n     elif kind=='fifo': i.type=tarfile.FIFOTYPE\n     elif kind=='sparse': i.type=tarfile.GNUTYPE_SPARSE; i.size=1; i.sparse=[(0,1)]\n     else: i.size=1; t.addfile(i,io.BytesIO(b'x')); return p\n     if kind=='sparse': t.addfile(i,io.BytesIO(b'x'))\n     else: t.addfile(i)\n    if kind=='oversize-metadata':\n     i=tarfile.TarInfo('package/metadata'); i.pax_headers={'comment':'x'*2048}; i.size=1; t.addfile(i,io.BytesIO(b'x'))\n return p\nfor k in ('valid','dirs','traversal','absolute','backslash','unexpected','unexpected-dir','duplicate','symlink','hardlink','fifo','sparse','oversize-content','oversize-metadata'): make(k+'.tgz',k)\nmake('second.tgz','valid',123)\nvalid=open(os.path.join(root,'valid.tgz'),'rb').read(); raw=gzip.decompress(valid); end=raw.find(b'\\0'*1024)\nfor name,data in [('missing-footer.tgz',valid[:-8]),('bad-crc.tgz',valid[:-8]+bytes([valid[-8]^1])+valid[-7:]),('missing-end.tgz',gzip.compress(raw[:end],mtime=0)),('one-end-block.tgz',gzip.compress(raw[:end+512],mtime=0)),('nonzero-first-end-block.tgz',gzip.compress(raw[:end]+b'X'*512+raw[end+512:],mtime=0)),('nearzero-first-end-block.tgz',gzip.compress(raw[:end]+b'\\0'*511+b'X'+raw[end+512:],mtime=0)),('nonzero-trailing.tgz',gzip.compress(raw+b'unexpected',mtime=0)),('oversized-suffix.tgz',gzip.compress(raw+b'x'*(64*1024*1024+1),mtime=0))]: open(os.path.join(root,name),'wb').write(data)\nwith open(os.path.join(root,'truncated.tgz'),'wb') as f: f.write(valid[:-12])`;
+  execFileSync("python3", ["-c", archiveScript, archiveFixtures]);
+  const helper = path.join(path.dirname(fileURLToPath(import.meta.url)), "../.github/release-tools/validate-archive.py");
+  const runHelper = (archive, destination, extraArgs = []) => spawnSync("python3", [helper, path.join(archiveFixtures, archive), destination, ...extraArgs], { encoding: "utf8" });
+  for (const archive of ["valid.tgz", "dirs.tgz", "second.tgz"]) {
+    const destination = path.join(archiveFixtures, `${archive}-out`);
+    const result = runHelper(archive, destination);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.readFileSync(path.join(destination, "package/LICENSE"), "utf8"), "license");
+  }
+  assert.notDeepEqual(fs.readFileSync(path.join(archiveFixtures, "valid.tgz")), fs.readFileSync(path.join(archiveFixtures, "second.tgz")));
+  const rejectedArchives = ["traversal.tgz", "absolute.tgz", "backslash.tgz", "unexpected.tgz", "unexpected-dir.tgz", "duplicate.tgz", "symlink.tgz", "hardlink.tgz", "fifo.tgz", "sparse.tgz", "truncated.tgz", "missing-footer.tgz", "bad-crc.tgz", "missing-end.tgz", "one-end-block.tgz", "nonzero-first-end-block.tgz", "nearzero-first-end-block.tgz", "nonzero-trailing.tgz", "oversized-suffix.tgz"];
+  for (const archive of rejectedArchives) {
+    const destination = path.join(archiveFixtures, `${archive}-out`);
+    const result = runHelper(archive, destination);
+    assert.notEqual(result.status, 0, `${archive} must reject`);
+    assert.ok(!result.stderr.includes("Traceback"), result.stderr);
+    assert.ok(!fs.existsSync(destination), `${archive} failure removes its owned partial output`);
+  }
+  for (const [archive, contentLimit, streamLimit] of [["oversize-content.tgz", 10, 100000], ["oversize-metadata.tgz", 100000, 1024]]) {
+    const destination = path.join(archiveFixtures, `${archive}-out`);
+    const snippet = `import runpy,sys; m=runpy.run_path(sys.argv[1]); m['unpack'](sys.argv[2],sys.argv[3],int(sys.argv[4]),int(sys.argv[5]))`;
+    const result = spawnSync("python3", ["-c", snippet, helper, path.join(archiveFixtures, archive), destination, String(contentLimit), String(streamLimit)], { encoding: "utf8" });
+    assert.notEqual(result.status, 0, `${archive} limit must reject`);
+    assert.ok(!fs.existsSync(destination), `${archive} limit failure cleans output`);
+  }
+  const preexistingDestination = path.join(archiveFixtures, "preexisting-output");
+  fs.mkdirSync(preexistingDestination);
+  fs.writeFileSync(path.join(preexistingDestination, "keep"), "owned by caller");
+  assert.notEqual(runHelper("valid.tgz", preexistingDestination).status, 0);
+  assert.equal(fs.readFileSync(path.join(preexistingDestination, "keep"), "utf8"), "owned by caller", "failed mkdir never removes an unowned destination");
+  assert.ok(!fs.existsSync(path.join(archiveFixtures, "outside")), "malicious members never write outside the owned destination");
+} finally { fs.rmSync(archiveFixtures, { recursive: true, force: true }); }
+
 // Prepare a real tarball from an isolated disposable git fixture, then verify exact staged version and package bytes.
 const thisRepo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "pi-release-coordinator-fixture-"));
@@ -407,16 +481,17 @@ try {
   assert.deepEqual(prepared.bytes, fs.readFileSync(path.join(prepared.workRoot, prepared.filename)), "publisher bytes are the exact validated tarball");
   assert.equal(JSON.parse(fs.readFileSync(path.join(fixture, "package.json"), "utf8")).version, "0.1.0", "staging did not mutate source checkout");
 
-  const releaseState = { tag: null, npm: null, release: null, distTags: {} };
+  const releaseState = { tag: null, npm: null, release: null, distTags: {}, tarballBytes: null };
   const releaseWrites = [];
   const releaseAdapters = {
     validateSource: async () => {},
     readTag: async () => releaseState.tag,
     readNpm: async (_name, version) => version === "0.1.0" || version === releaseState.distTags.latest ? releaseState.npm : null,
+    readNpmTarball: async () => Buffer.from(releaseState.tarballBytes),
     readRelease: async () => releaseState.release,
     readDistTags: async () => releaseState.distTags,
     createTag: async (tag, tagSha) => { releaseWrites.push(`tag:${tag}`); releaseState.tag = { sha: tagSha }; },
-    publishTarball: async (_name, tarball, { tag }) => { releaseWrites.push(`npm:${tag}`); releaseState.npm = { version: "0.1.0", gitHead: fixtureSha, dist: { integrity: artifactIntegrity(tarball) } }; },
+    publishTarball: async (_name, tarball, { tag }) => { releaseWrites.push(`npm:${tag}`); releaseState.tarballBytes = Buffer.from(tarball); releaseState.npm = { name: "@soulwaxx/pi-skill-autocomplete", version: "0.1.0", gitHead: fixtureSha, dist: { integrity: artifactIntegrity(tarball), tarball: "https://registry.npmjs.org/@soulwaxx/pi-skill-autocomplete/-/pkg.tgz" } }; },
     createRelease: async (tag, tagSha) => { releaseWrites.push(`release:${tag}`); releaseState.release = { tag_name: tag, name: tag, body: "", targetSha: tagSha, draft: false, prerelease: false, assets: [] }; },
     promoteLatest: async (_name, version) => { releaseWrites.push(`latest:${version}`); releaseState.distTags.latest = version; },
   };
@@ -425,7 +500,39 @@ try {
   assert.deepEqual(releaseWrites, ["tag:v0.1.0", "npm:pi-release-candidate", "release:v0.1.0", "latest:0.1.0"]);
   gitRun(["tag", "v0.1.0", fixtureSha]);
   const writesBeforeRecovery = releaseWrites.slice();
+  const originalTarball = Buffer.from(releaseState.tarballBytes);
+  const gzipDifferent = execFileSync("python3", ["-c", "import gzip,sys; sys.stdout.buffer.write(gzip.compress(gzip.decompress(sys.stdin.buffer.read()), mtime=123) )"], { input: originalTarball });
+  assert.notDeepEqual(gzipDifferent, originalTarball);
+  releaseState.tarballBytes = gzipDifferent;
+  releaseState.npm.dist.integrity = artifactIntegrity(gzipDifferent);
   const retry = await runRelease({ root: fixture, trustedRoot: thisRepo, sourceSha: fixtureSha, repository: "fixture/project", adapters: releaseAdapters, workRoot: path.join(work, "entrypoint-retry") });
+  assert.deepEqual(releaseState.tarballBytes, gzipDifferent, "recovery used the registry's gzip-different original tarball bytes");
+  await assert.rejects(() => runRelease({ root: fixture, trustedRoot: thisRepo, sourceSha: fixtureSha, repository: "fixture/project", adapters: { ...releaseAdapters, readNpm: async () => ({ ...releaseState.npm, dist: { ...releaseState.npm.dist, integrity: artifactIntegrity(originalTarball) } }) }, workRoot: path.join(work, "entrypoint-bad-sri") }), /does not match recorded SHA-512 SRI/);
+  assert.deepEqual(releaseWrites, writesBeforeRecovery, "bad registry SRI is rejected before remote mutation");
+  execFileSync("python3", ["-c", "import gzip,io,os,sys,tarfile; root=sys.argv[1]; out=sys.argv[2]; files=['LICENSE','README.md','extensions/skill-autocomplete.ts','extensions/skill-reference-parser.ts','package.json']; buf=io.BytesIO(); t=tarfile.open(fileobj=buf,mode='w'); [(lambda n,d: (setattr(i,'size',len(d)),t.addfile(i,io.BytesIO(d))))(name, (b'TAMPERED' if name.endswith('skill-autocomplete.ts') else open(os.path.join(root,name),'rb').read())) for name in files for i in [tarfile.TarInfo('package/'+name)]]; t.close(); open(out,'wb').write(gzip.compress(buf.getvalue(),mtime=321) )" , path.join(prepared.workRoot, "unpacked/package"), path.join(work, "tampered.tgz")]);
+  const tamperedTarball = fs.readFileSync(path.join(work, "tampered.tgz"));
+  releaseState.tarballBytes = tamperedTarball;
+  releaseState.npm.dist.integrity = artifactIntegrity(tamperedTarball);
+  await assert.rejects(() => runRelease({ root: fixture, trustedRoot: thisRepo, sourceSha: fixtureSha, repository: "fixture/project", adapters: releaseAdapters, workRoot: path.join(work, "entrypoint-tampered-source") }), /packed extensions\/skill-autocomplete\.ts differs/);
+  assert.deepEqual(releaseWrites, writesBeforeRecovery, "source-file tampering is rejected before remote mutation");
+  const matchingSriSuffix = execFileSync("python3", ["-c", "import gzip,sys; sys.stdout.buffer.write(gzip.compress(gzip.decompress(sys.stdin.buffer.read())+b'unexpected suffix',mtime=0))"], { input: originalTarball });
+  releaseState.tarballBytes = matchingSriSuffix;
+  releaseState.npm.dist.integrity = artifactIntegrity(matchingSriSuffix);
+  await assert.rejects(() => runRelease({ root: fixture, trustedRoot: thisRepo, sourceSha: fixtureSha, repository: "fixture/project", adapters: releaseAdapters, workRoot: path.join(work, "entrypoint-trailing-data") }), /nonzero data after tar end markers/);
+  assert.equal(releaseState.npm.dist.integrity, artifactIntegrity(matchingSriSuffix), "the rejected archive carries its matching recorded SRI");
+  assert.deepEqual(releaseWrites, writesBeforeRecovery, "matching-SRI trailing data is rejected before any remote mutation");
+  for (const [kind, block] of [["nonzero", "b'X'*512"], ["nearzero", "b'\\0'*511+b'X'"]]) {
+    const malformedFirstEnd = execFileSync("python3", ["-c", `import gzip,sys; raw=gzip.decompress(sys.stdin.buffer.read()); end=raw.find(b'\\0'*1024); sys.stdout.buffer.write(gzip.compress(raw[:end]+${block}+raw[end+512:],mtime=0))`], { input: originalTarball });
+    releaseState.tarballBytes = malformedFirstEnd;
+    releaseState.npm.dist.integrity = artifactIntegrity(malformedFirstEnd);
+    const malformedWork = path.join(work, `entrypoint-${kind}-first-end`);
+    await assert.rejects(() => runRelease({ root: fixture, trustedRoot: thisRepo, sourceSha: fixtureSha, repository: "fixture/project", adapters: releaseAdapters, workRoot: malformedWork }), /invalid tar header/);
+    assert.equal(releaseState.npm.dist.integrity, artifactIntegrity(malformedFirstEnd), `${kind} malformed archive carries matching recorded SRI`);
+    assert.deepEqual(releaseWrites, writesBeforeRecovery, `${kind} malformed source-equal archive rejects before remote mutation`);
+    assert.ok(!fs.existsSync(path.join(malformedWork, "unpacked")), `${kind} malformed archive removes its owned unpack directory`);
+  }
+  releaseState.tarballBytes = gzipDifferent;
+  releaseState.npm.dist.integrity = artifactIntegrity(gzipDifferent);
   assert.equal(retry.version, "0.1.0", "same-source retry recovers the existing version instead of selecting another bump");
   assert.deepEqual(releaseWrites, writesBeforeRecovery, "complete same-source retry is idempotent");
 

@@ -4,12 +4,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { deflateSync } from "node:zlib";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { expectedSkillContextPrefix } from "./skill-context-expectations.mjs";
+import { expectedSkillExpansion } from "./skill-context-expectations.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const agentDir = process.env.PI_CODING_AGENT_DIR;
 const settings = JSON.parse(await readFile(`${agentDir}/settings.json`, "utf8"));
-const contextPrefix = expectedSkillContextPrefix(settings.packages[0]);
+const packageRoot = settings.testPackageRoot;
 await mkdir(`${agentDir}/skills/alpha`, { recursive: true });
 await mkdir(`${agentDir}/skills/beta`, { recursive: true });
 await mkdir(`${agentDir}/skills/gamma`, { recursive: true });
@@ -139,6 +139,7 @@ try {
   send({ id: "malformed", type: "prompt", message: "bad [[skill:two words]]" });
   const malformed = await waitFor((record) => record.type === "response" && record.id === "malformed", "malformed reference response", malformedStart);
   assert.equal(malformed.data.disposition, "handled");
+  await waitFor((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error", "restored error notification", malformedStart);
   await waitFor((record) => record.type === "extension_ui_request" && record.method === "set_editor_text" && record.text === "bad [[skill:two words]]", "malformed reference editor restoration", malformedStart);
 
   const literalStart = records.length;
@@ -169,6 +170,8 @@ try {
 
   const providerLog = (await readFile("rpc-provider.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
   const providerCalls = providerLog.filter((entry) => entry.type === "provider");
+  const uiFailures = providerLog.find((entry) => entry.type === "ui_failure_injected" && entry.message === "ui-fail: [[skill:missing]]");
+  assert.deepEqual(uiFailures?.methods.sort(), ["notify", "setEditorText"], "both real RPC UI methods threw in the input handler");
   const textOf = (message) => message.content.filter((part) => part.type === "text").map((part) => part.text).join("");
   assert.ok(providerCalls.length >= 5, `success/template/queue cases reached the fake provider: ${providerCalls.length}`);
   assert.ok(!providerCalls.some((entry) => JSON.stringify(entry.messages).includes("/drop [[skill:alpha]]")), "handled template rejection did not call provider");
@@ -176,8 +179,11 @@ try {
   const user = providerCalls[0].messages.findLast((message) => message.role === "user");
   const userText = textOf(user);
   const expectedAuthored = "resubmit [[skill:beta]] then [[skill:alpha]] and [[skill:beta]]";
-  const expectedExpanded = `${expectedAuthored}${contextPrefix}\n\n--- Skill beta (references relative to ${agentDir}/skills/beta) ---\nRPC BETA FULL BODY SENTINEL\n\n--- Skill alpha (references relative to ${agentDir}/skills/alpha) ---\nRPC ALPHA FULL BODY SENTINEL; literal [[skill:beta]]`;
-  assert.equal(userText, expectedExpanded, "provider receives exact authored input plus complete deduplicated bodies in first-reference order");
+  const expectedExpanded = expectedSkillExpansion(packageRoot, expectedAuthored, [
+    { name: "beta", directory: `${agentDir}/skills/beta`, body: "RPC BETA FULL BODY SENTINEL" },
+    { name: "alpha", directory: `${agentDir}/skills/alpha`, body: "RPC ALPHA FULL BODY SENTINEL; literal [[skill:beta]]" },
+  ]);
+  assert.equal(userText, expectedExpanded, "provider receives exact full plaintext expansion and expected legacy/current framing");
   assert.ok(JSON.stringify(user.content).includes("RPC ALPHA FULL BODY SENTINEL"));
   assert.ok(JSON.stringify(user.content).includes("RPC BETA FULL BODY SENTINEL"));
   assert.ok(user.content.some((part) => part.type === "image"), "resubmitted RPC attachment reaches provider after transformation");
@@ -188,16 +194,26 @@ try {
   const literalUser = literalProvider?.messages.findLast((message) => message.role === "user");
   assert.ok(!JSON.stringify(literalUser.content).includes("RPC ALPHA FULL BODY SENTINEL"));
   assert.ok(!JSON.stringify(literalUser.content).includes("RPC BETA FULL BODY SENTINEL"));
-  assert.ok(providerCalls.some((provider) => JSON.stringify(provider.messages).includes("queued [[skill:alpha]]") && JSON.stringify(provider.messages).includes("RPC ALPHA FULL BODY SENTINEL")));
-  assert.ok(providerCalls.some((provider) => JSON.stringify(provider.messages).includes("followup [[skill:beta]]") && JSON.stringify(provider.messages).includes("RPC BETA FULL BODY SENTINEL")));
+  const userMessages = (provider) => provider.messages.filter((message) => message.role === "user").map(textOf);
+  const queuedSteer = expectedSkillExpansion(packageRoot, "queued [[skill:alpha]]", [
+    { name: "alpha", directory: `${agentDir}/skills/alpha`, body: "RPC ALPHA FULL BODY SENTINEL; literal [[skill:beta]]" },
+  ]);
+  const queuedFollowUp = expectedSkillExpansion(packageRoot, "followup [[skill:beta]]", [
+    { name: "beta", directory: `${agentDir}/skills/beta`, body: "RPC BETA FULL BODY SENTINEL" },
+  ]);
+  assert.ok(providerCalls.some((provider) => userMessages(provider).includes(queuedSteer)), "the exact queued authored message is expanded with its own alpha body in that same user message");
+  assert.ok(providerCalls.some((provider) => userMessages(provider).includes(queuedFollowUp)), "the exact queued follow-up is expanded with its own beta body in that same user message");
 
   const serialized = (needle) => providerCalls.find((entry) => JSON.stringify(entry.messages).includes(needle));
   assert.ok(JSON.stringify(user.content).includes(`references relative to ${agentDir}/skills/alpha`), "reference context comes from registered sourceInfo.path");
   const nativeSkill = serialized("native argument");
   assert.ok(nativeSkill, "native skill plus authored references reaches provider");
-  assert.ok(JSON.stringify(nativeSkill.messages).includes("RPC ALPHA FULL BODY SENTINEL"));
-  assert.ok(JSON.stringify(nativeSkill.messages).includes("RPC BETA FULL BODY SENTINEL"));
-  assert.ok(JSON.stringify(nativeSkill.messages).includes("native argument"));
+  const nativeUserText = textOf(nativeSkill.messages.findLast((message) => message.role === "user"));
+  const nativeSkillCard = `<skill name="alpha" location="${agentDir}/skills/alpha/SKILL.md">\nReferences are relative to ${agentDir}/skills/alpha.\n\nRPC ALPHA FULL BODY SENTINEL; literal [[skill:beta]]\n</skill>`;
+  const expectedNativeUserText = `${nativeSkillCard}\n\n${expectedSkillExpansion(packageRoot, "native argument [[skill:beta]]", [
+    { name: "beta", directory: `${agentDir}/skills/beta`, body: "RPC BETA FULL BODY SENTINEL" },
+  ])}`;
+  assert.equal(nativeUserText, expectedNativeUserText, "native skill card remains intact before the exact inline expansion framing");
   const bodyLiteralProvider = providerCalls.find((entry) => { const text = textOf(entry.messages.findLast((message) => message.role === "user")); return text.includes("RPC ALPHA FULL BODY SENTINEL") && text.includes("literal [[skill:beta]]") && !text.includes("RPC BETA FULL BODY SENTINEL"); });
   assert.ok(bodyLiteralProvider, JSON.stringify(providerCalls.map((entry) => { const text = textOf(entry.messages.findLast((message) => message.role === "user")); return { start: text.slice(0, 100), alpha: text.includes("RPC ALPHA FULL BODY SENTINEL"), beta: text.includes("RPC BETA FULL BODY SENTINEL"), literal: text.includes("literal [[skill:beta]]") }; })));
   const bodyLiteralUser = bodyLiteralProvider.messages.filter((message) => message.role === "user").at(-1);
@@ -208,7 +224,7 @@ try {
   assert.ok(textOf(inlineCodeProvider.messages.findLast((message) => message.role === "user")).includes("RPC ALPHA FULL BODY SENTINEL"), "active reference after the code span loads its body");
   const exactBody = providerCalls.find((entry) => textOf(entry.messages.findLast((message) => message.role === "user")).includes("é".repeat(32)));
   assert.ok(exactBody, "exact 131072-byte UTF-8 body reaches the provider");
-  assert.equal(textOf(exactBody.messages.findLast((message) => message.role === "user")), `[[skill:gamma]] [[skill:gamma]]${contextPrefix}\n\n--- Skill gamma (references relative to ${agentDir}/skills/gamma) ---\n${"é".repeat(65536)}`, "complete byte-boundary body equals the provider-visible expansion");
+  assert.equal(textOf(exactBody.messages.findLast((message) => message.role === "user")), expectedSkillExpansion(packageRoot, "[[skill:gamma]] [[skill:gamma]]", [{ name: "gamma", directory: `${agentDir}/skills/gamma`, body: "é".repeat(65536) }]), "exact UTF-8 boundary expansion reaches the provider in current and legacy forms");
   assert.ok(!providerCalls.some((entry) => JSON.stringify(entry.messages).includes("ui-fail:")));
   assert.ok(Buffer.byteLength("é".repeat(65536), "utf8") === 131072, "full fixture body is at the configured byte boundary");
   assert.ok(!providerCalls.some((entry) => JSON.stringify(entry.messages).includes("[[skill:beta]] [[skill:delta]]")), "oversize multi-reference request does not reach provider with partial body content");

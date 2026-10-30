@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, getAgentDir, InteractiveMode, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { registerRuntimeObserver } from "./runtime-observer.mjs";
+import { compactSkillReferenceDisplay } from "../extensions/skill-reference-parser.ts";
+import { isInitialRelease } from "./skill-context-expectations.mjs";
 
 process.env.PI_OFFLINE = "1";
 process.exit = () => {};
@@ -12,7 +14,9 @@ const agentDir = process.env.PI_CODING_AGENT_DIR ?? getAgentDir();
 const logPath = join(cwd, "row8-provider.jsonl");
 const record = (entry) => appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
 mkdirSync(join(agentDir, "skills", "alpha"), { recursive: true });
+mkdirSync(join(agentDir, "skills", "beta"), { recursive: true });
 writeFileSync(join(agentDir, "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: autocomplete integration\n---\nHOST ALPHA BODY SENTINEL\n");
+writeFileSync(join(agentDir, "skills", "beta", "SKILL.md"), "---\nname: beta\ndescription: second integration skill\n---\nHOST BETA BODY SENTINEL\n");
 
 class FakeTerminal {
   input; output = "";
@@ -48,7 +52,8 @@ const createRuntime = async ({ cwd: sessionCwd, agentDir: sessionAgentDir, sessi
   const services = await createAgentSessionServices({ cwd: sessionCwd, agentDir: sessionAgentDir, modelRuntime, resourceLoaderOptions: { extensionFactories: [(pi) => registerRuntimeObserver(pi, record)] } });
   return { ...(await createAgentSessionFromServices({ services, sessionManager, model: modelRuntime.getModel("row8-fake", "probe"), noTools: "all" })), services };
 };
-const runtime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager: SessionManager.inMemory(cwd) });
+const sessionManager = SessionManager.inMemory(cwd);
+const runtime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager });
 const terminal = new FakeTerminal();
 const mode = new InteractiveMode(runtime, { terminal, tuiMode: "regular", quietStartup: true });
 mode.run();
@@ -58,14 +63,42 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 150));
   terminal.send("\t");
   await new Promise((resolve) => setTimeout(resolve, 50));
+  terminal.type(" [[skill:beta]]");
   terminal.send("\r");
   const entries = await waitFor((items) => items.some((entry) => entry.type === "provider"), "fake provider request");
   const userMessages = entries.find((entry) => entry.type === "provider").messages.filter((message) => message.role === "user");
   const content = JSON.stringify(userMessages);
+  const userText = userMessages.flatMap((message) => message.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n");
+  if (!isInitialRelease(process.argv[2] ?? cwd)) {
+    assert.match(compactSkillReferenceDisplay(userText), /Skills loaded: `?alpha`?, `?beta`?/);
+    assert.equal(runtime.session.extensionRunner.getMarkdownTransformers().length, 1, "real session registered the user Markdown transformer");
+  }
   assert.ok(content.includes("[[skill:alpha]]"), "real TUI Tab selection inserts the explicit skill reference");
   assert.ok(content.includes("HOST ALPHA BODY SENTINEL"), "the submitted reference loads its registered full skill body");
-  console.log("PASS real Pi InteractiveMode autocomplete selection inserts [[skill:alpha]] and submits its skill body to the fake provider");
+  assert.ok(content.includes("HOST BETA BODY SENTINEL"), "second full body also reaches the provider");
+  if (!isInitialRelease(process.argv[2] ?? cwd)) {
+    assert.match(terminal.output, /Skills loaded:.*alpha.*beta/,  `real interactive transcript renders ordered compact names; output=${terminal.output.slice(-3000)}`);
+    assert.ok(!terminal.output.includes("HOST ALPHA BODY SENTINEL") && !terminal.output.includes("HOST BETA BODY SENTINEL"), "real interactive transcript does not dump complete skill bodies");
+  }
+  console.log("PASS real Pi InteractiveMode autocomplete renders compact skill summaries while submitting full bodies to the fake provider");
 } finally {
   terminal.send("\x03"); await new Promise((resolve) => setTimeout(resolve, 30)); terminal.send("\x03");
   await runtime.dispose();
+}
+
+const restoredRuntime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager });
+const restoredTerminal = new FakeTerminal();
+const restoredMode = new InteractiveMode(restoredRuntime, { terminal: restoredTerminal, tuiMode: "regular", quietStartup: true });
+restoredMode.run();
+try {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const restoredOutput = restoredTerminal.output;
+  if (!isInitialRelease(process.argv[2] ?? cwd)) {
+    assert.match(restoredOutput, /Skills loaded:.*alpha.*beta/,  "session-restored user message compacts from persisted framing");
+    assert.ok(!restoredTerminal.output.includes("HOST ALPHA BODY SENTINEL") && !restoredTerminal.output.includes("HOST BETA BODY SENTINEL"), "restored TUI omits stored skill bodies too");
+    console.log("PASS restored Pi session renders compact skill names from stored full-body messages");
+  }
+} finally {
+  restoredTerminal.send("\x03"); await new Promise((resolve) => setTimeout(resolve, 30)); restoredTerminal.send("\x03");
+  await restoredRuntime.dispose();
 }

@@ -90,7 +90,21 @@ export async function runRelease({ root = process.cwd(), trustedRoot = root, sou
     if (previousVersion) await assertPreviousReleaseComplete(`v${previousVersion}`, root, api);
   }
   await api.validateSource({ sha: sourceSha, version: release.version, tag: release.tag }, { mode });
-  const artifact = prepareArtifact({ sourceRoot: root, trustedRoot, sourceSha, version: release.version, ...(workRoot ? { workRoot } : {}) });
+  let retainedTarballBytes;
+  let expectedIntegrity;
+  if (mode === "recovery") {
+    const npm = await api.readNpm("@soulwaxx/pi-skill-autocomplete", release.version);
+    if (npm !== null) {
+      assert.equal(npm.name, "@soulwaxx/pi-skill-autocomplete");
+      assert.equal(npm.version, release.version);
+      assert.equal(npm.gitHead, sourceSha);
+      expectedIntegrity = npm.dist?.integrity;
+      assert.match(expectedIntegrity ?? "", /^sha512-[A-Za-z0-9+/]{86}==$/);
+      assert.equal(typeof api.readNpmTarball, "function", "recovery adapter cannot retrieve the existing npm tarball");
+      retainedTarballBytes = await api.readNpmTarball(npm.dist?.tarball);
+    }
+  }
+  const artifact = prepareArtifact({ sourceRoot: root, trustedRoot, sourceSha, version: release.version, ...(retainedTarballBytes ? { retainedTarballBytes, expectedIntegrity } : {}), ...(workRoot ? { workRoot } : {}) });
   const source = { sha: sourceSha, version: release.version, tag: release.tag };
   if (prepareOnly) return { source, mode, artifact };
   return publishRelease({ source, artifact, packageName: "@soulwaxx/pi-skill-autocomplete" }, api, { mode });

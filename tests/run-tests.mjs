@@ -31,7 +31,7 @@ for (const [script, args] of [
 
 const hostIntegration = runIsolated(
   resolve(repoRoot, "tests/row8-tui-autocomplete.mjs"),
-  [],
+  [artifactRoot ?? repoRoot],
   { settings: { packages: [artifactRoot ?? repoRoot] } },
 );
 process.stdout.write(hostIntegration.stdout ?? "");

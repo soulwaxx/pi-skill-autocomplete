@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { stripFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { expandSkillReferences } from "./skill-reference-parser.ts";
+import { compactSkillReferenceDisplay, expandSkillReferences } from "./skill-reference-parser.ts";
 import { fuzzyMatch } from "@earendil-works/pi-tui";
 import type {
 	AutocompleteItem,
@@ -175,13 +175,16 @@ function makeProvider(
 		shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
 			return (
 				current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ??
-				false
+				true
 			);
 		},
 	};
 }
 
 export default function skillAutocompleteExtension(pi: ExtensionAPI): void {
+	pi.registerMarkdownTransformer((markdown, context) =>
+		context.messageType === "user" ? compactSkillReferenceDisplay(markdown) : markdown,
+	);
 	pi.on("input", (event, ctx) => {
 		if ((ctx.mode !== "tui" && ctx.mode !== "rpc") || event.source === "extension") {
 			return { action: "continue" };

@@ -77,8 +77,8 @@ jobs:
         run: |
           npm ci --ignore-scripts --no-fund
           npm ci --prefix .github/release-tools --ignore-scripts --no-fund
-          npm audit --audit-level=critical
-          npm audit --prefix .github/release-tools --audit-level=critical
+          npm audit --audit-level=high
+          npm audit --prefix .github/release-tools --audit-level=high
       - name: Validate workflows with checksum-verified actionlint
         env:
           GH_TOKEN: ${{ github.token }}

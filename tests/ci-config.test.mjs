@@ -40,6 +40,8 @@ try {
   rejects(".github/release-tools/adapters.mjs", (text) => `${text}\n// bootstrapToken fallback\n`, /must not accept npm credentials/);
   rejects(".github/workflows/test.yml", (text) => text.replace("[opened, synchronize, reopened]", "[opened, synchronize, reopened, edited]"), /AssertionError/);
   rejects(".github/workflows/test.yml", (text) => text.replace("sha256sum --check --ignore-missing", "echo unchecked"), /AssertionError/);
+  rejects(".github/workflows/test.yml", (text) => text.replace("npm audit --audit-level=high", "npm audit --audit-level=critical"), /AssertionError/);
+  rejects(".github/workflows/release.yml", (text) => text.replace("npm audit --audit-level=high", "npm audit --audit-level=critical"), /AssertionError/);
   rejects(".github/workflows/release.yml", (text) => text.replace(/NPM_VERSION: '[^']+'/, "NPM_VERSION: '11.98.0'"), /same npm CLI/);
   rejects(".github/workflows/renovate.yml", (text) => text.replace(/renovatebot\/github-action@[0-9a-f]{40}/, "renovatebot/github-action@main"), /must pin action digests/);
   rejects(".github/renovate.json", (text) => text.replace('"github-actions",', ''), /AssertionError/);

@@ -79,8 +79,8 @@ jobs:
           npm ci --ignore-scripts --no-fund
           npm ci --prefix .github/release-tools --ignore-scripts --no-fund
           npm run release:check
-          npm audit --audit-level=critical
-          npm audit --prefix .github/release-tools --audit-level=critical
+          npm audit --audit-level=high
+          npm audit --prefix .github/release-tools --audit-level=high
       - name: Prepare and verify exact package bytes without write credentials
         id: prepare
         env:

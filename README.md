@@ -10,7 +10,7 @@ After the package is published, install it in Pi:
 pi install npm:@soulwaxx/pi-skill-autocomplete
 ```
 
-Reload Pi after installation. Requires Pi `1.4.0` and Node.js `>=22.19.0`. CI is configured for Linux and macOS with Node 22 and 24; remote CI results have not yet been observed for this branch. This change does not publish the package.
+Reload Pi after installation. Requires Pi `1.4.0` and Node.js `>=22.19.0`. CI is configured for Linux and macOS with Node 22 and 24. The initial `0.1.0` release has already been published; these source-repository changes do not publish another version.
 
 ## Use
 
@@ -28,7 +28,7 @@ Review this change using [[skill:code-review]] and summarize risks.
 
 You can also type or paste `[[skill:name]]` directly. A valid reference explicitly requests that registered skill even if Pi hides it from model invocation. Repeated references load a skill once, in the order of first appearance.
 
-The extension reads skill files only when a TUI or RPC user input is submitted—not while typing. It preserves authored prompt text and appends the full trimmed instruction bodies as user-message content, with each skill's source directory for locating supporting files. The appended context explicitly tells the model that these skills are already loaded and not to reread their `SKILL.md` files unless asked to reload them. This is model guidance, not a tool restriction: a model can still choose to reread a file, which Pi displays as a separate `[skill]` read card. Supporting files are not loaded automatically; the skill can refer to them for on-demand use. Pi's own editor trimming and native command handling remain native. The extension does not elevate skill text into the system prompt or recursively activate references found inside skill bodies.
+The extension reads skill files only when a TUI or RPC user input is submitted—not while typing. It preserves authored prompt text and appends the full trimmed instruction bodies as user-message content, with each skill's source directory for locating supporting files. The appendix uses a versioned, length-framed plaintext format with a SHA-256 digest for corruption detection; this is not authentication. The digest and framing let the public user-Markdown transformer compact a recognized, complete appendix in TUI rendering to `Skills loaded: name, ...`, while persisted messages and provider input retain the full instructions. There is no token reduction or display toggle. Damaged or unrecognized frames remain raw; copying a complete valid generated frame can compact, so this is presentation behavior, not a security boundary. The transformer handles only user messages and does not alter assistant rendering; RPC and HTML output retain full text. Native `/skill:` can be combined with inline references, and a fresh runtime over stored messages can recognize the self-contained frame. Marker-like text inside a skill body remains part of the opaque, length-framed payload rather than being treated as the appendix boundary. The appended context explicitly tells the model that these skills are already loaded and not to reread their `SKILL.md` files unless asked to reload them. This is model guidance, not a tool restriction: a model can still choose to reread a file, which Pi displays as a separate `[skill]` read card. Supporting files are not loaded automatically; the skill can refer to them for on-demand use. Pi's own editor trimming and native command handling remain native. The extension does not elevate skill text into the system prompt or recursively activate references found inside skill bodies.
 
 References are recognized in ordinary Markdown prose. An odd number of backslashes directly before `[[skill:name]]` escapes it; an even number does not. Inline code is excluded only when an exact-length matching backtick run closes its span; an unmatched inline opener remains literal. Fences allow up to three leading spaces and require at least three backticks or tildes. A closing fence uses the same character with at least the opening run length and only trailing whitespace; an unclosed fence remains literal through end of input. Backtick fence info strings cannot contain backticks. Indented Markdown code is not guaranteed to be excluded.
 
@@ -55,8 +55,8 @@ npm run bench
 npm ci --prefix .github/release-tools --ignore-scripts
 npm run release:check
 npm run test:release
-npm audit --audit-level=critical
-npm audit --prefix .github/release-tools --audit-level=critical
+npm audit --audit-level=high
+npm audit --prefix .github/release-tools --audit-level=high
 ```
 
 For GitHub Actions workflow syntax validation, install the actionlint version selected in `.github/workflows/test.yml` and verify its archive SHA-256 against the matching upstream release's checksum manifest, then run:
