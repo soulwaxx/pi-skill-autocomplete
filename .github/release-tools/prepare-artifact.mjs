@@ -45,7 +45,7 @@ function committedFile(sourceRoot, sourceSha, file, env) {
   return run("git", ["show", `${sourceSha}:${file}`], { cwd: sourceRoot, env, encoding: "buffer" });
 }
 
-export function prepareArtifact({ sourceRoot, repoRoot, trustedRoot, sourceSha, version, workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-release-stage-")) }) {
+export function prepareArtifact({ sourceRoot, repoRoot, trustedRoot, sourceSha, version, retainedTarballBytes, expectedIntegrity, workRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pi-release-stage-")) }) {
   sourceRoot ??= repoRoot;
   trustedRoot ??= repoRoot ?? sourceRoot;
   assert.match(sourceSha, /^[0-9a-f]{40}$/);
@@ -56,7 +56,6 @@ export function prepareArtifact({ sourceRoot, repoRoot, trustedRoot, sourceSha, 
   const stage = path.join(workRoot, "stage");
   const unpackRoot = path.join(workRoot, "unpacked");
   fs.mkdirSync(stage, { recursive: true });
-  fs.mkdirSync(unpackRoot, { recursive: true });
   for (const file of runtimeFiles) {
     const target = path.join(stage, file);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -73,19 +72,25 @@ export function prepareArtifact({ sourceRoot, repoRoot, trustedRoot, sourceSha, 
   lock.packages[""].version = version;
   fs.writeFileSync(path.join(stage, "package-lock.json"), `${JSON.stringify(lock, null, 2)}\n`);
 
-  const pack = JSON.parse(run("npm", ["pack", "--json", "--ignore-scripts", "--offline", "--pack-destination", workRoot], { cwd: stage, env }))[0];
-  assert.equal(pack.name, manifest.name);
-  assert.equal(pack.version, version);
-  assert.deepEqual(pack.files.map(({ path: file }) => file).sort(), packedFiles, "prepared tarball violates the runtime allowlist");
-  const tarball = path.join(workRoot, pack.filename);
-  // Node/zlib versions can produce different gzip bytes for identical tar contents.
-  // Recover the exact initial verified archive, not a byte-different repack.
-  if (sourceSha === "8cb8df8921457d3da72081ac11e19173347d9713" && version === "0.1.0") {
-    const retained = Buffer.from(fs.readFileSync(path.join(trustedRoot, "tests/fixtures/initial-release.tgz.base64"), "utf8").trim(), "base64");
-    assert.equal(artifactIntegrity(retained), "sha512-97vyneSMTuZDxoA+qk95EVQv7ymKovscvO/UoKJwDrGfY1kf+Qc1Wo8yhrUI75N46ejrvX1+o3RNmPF82ouFzw==", "retained initial artifact identity changed");
-    fs.writeFileSync(tarball, retained);
+  const tarball = path.join(workRoot, "release.tgz");
+  let bytes;
+  if (retainedTarballBytes) {
+    assert.ok(Buffer.isBuffer(retainedTarballBytes) && retainedTarballBytes.length > 0);
+    bytes = retainedTarballBytes;
+  } else if (sourceSha === "8cb8df8921457d3da72081ac11e19173347d9713" && version === "0.1.0") {
+    // Keep the immutable original five-file fixture for initial-version compatibility.
+    bytes = Buffer.from(fs.readFileSync(path.join(trustedRoot, "tests/fixtures/initial-release.tgz.base64"), "utf8").trim(), "base64");
+    assert.equal(artifactIntegrity(bytes), "sha512-97vyneSMTuZDxoA+qk95EVQv7ymKovscvO/UoKJwDrGfY1kf+Qc1Wo8yhrUI75N46ejrvX1+o3RNmPF82ouFzw==", "retained initial artifact identity changed");
+  } else {
+    const pack = JSON.parse(run("npm", ["pack", "--json", "--ignore-scripts", "--offline", "--pack-destination", workRoot], { cwd: stage, env }))[0];
+    assert.equal(pack.name, manifest.name);
+    assert.equal(pack.version, version);
+    assert.deepEqual(pack.files.map(({ path: file }) => file).sort(), packedFiles, "prepared tarball violates the runtime allowlist");
+    bytes = fs.readFileSync(path.join(workRoot, pack.filename));
   }
-  run("tar", ["-xzf", tarball, "-C", unpackRoot], { cwd: workRoot, env });
+  if (expectedIntegrity) assert.equal(artifactIntegrity(bytes), expectedIntegrity, "npm tarball does not match recorded SHA-512 SRI");
+  fs.writeFileSync(tarball, bytes);
+  run("python3", [path.join(trustedRoot, ".github/release-tools/validate-archive.py"), tarball, unpackRoot], { cwd: workRoot, env });
   const unpacked = path.join(unpackRoot, "package");
   const actual = [];
   function collect(dir, prefix = "") {
@@ -111,6 +116,5 @@ export function prepareArtifact({ sourceRoot, repoRoot, trustedRoot, sourceSha, 
   const testEnv = isolatedPreparationEnv(workRoot);
   run(process.execPath, [path.join(trustedRoot, "tests/run-tests.mjs"), unpacked], { cwd: stage, env: testEnv });
   run(process.execPath, [path.join(trustedRoot, "tests/row5-feasibility.mjs"), unpacked], { cwd: stage, env: testEnv });
-  const bytes = fs.readFileSync(tarball);
-  return { version, sourceSha, integrity: artifactIntegrity(bytes), bytes, filename: pack.filename, workRoot };
+  return { version, sourceSha, integrity: artifactIntegrity(bytes), bytes, filename: "release.tgz", workRoot };
 }

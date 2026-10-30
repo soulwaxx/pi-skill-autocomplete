@@ -13,14 +13,14 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { registerRuntimeObserver } from "./runtime-observer.mjs";
-import { expectedSkillContextPrefix } from "./skill-context-expectations.mjs";
+import { expectedSkillExpansion } from "./skill-context-expectations.mjs";
 
 process.env.PI_OFFLINE = "1";
 process.exit = () => {}; // Keep assertions visible; InteractiveMode's normal shutdown exits the host process.
 const cwd = process.cwd();
 const agentDir = process.env.PI_CODING_AGENT_DIR ?? getAgentDir();
 const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
-const contextPrefix = expectedSkillContextPrefix(settings.packages[0]);
+const packageRoot = settings.packages[0];
 const logPath = join(cwd, "interactive-provider.jsonl");
 const record = (entry) => appendFileSync(logPath, `${JSON.stringify(entry)}\n`);
 mkdirSync(join(agentDir, "skills", "alpha"), { recursive: true });
@@ -220,7 +220,9 @@ try {
   const provider = entries.find((entry) => entry.type === "provider");
   const userText = provider.messages.findLast((message) => message.role === "user").content
     .filter((part) => part.type === "text").map((part) => part.text).join("");
-  assert.equal(userText, `success [[skill:alpha]]${contextPrefix}\n\n--- Skill alpha (references relative to ${agentDir}/skills/alpha) ---\nALPHA BODY SENTINEL`);
+  assert.equal(userText, expectedSkillExpansion(packageRoot, "success [[skill:alpha]]", [
+    { name: "alpha", directory: `${agentDir}/skills/alpha`, body: "ALPHA BODY SENTINEL" },
+  ]));
   assert.equal((userText.match(/ALPHA BODY SENTINEL/g) ?? []).length, 1);
   assert.ok(JSON.stringify(provider.messages).includes('"type":"image"'));
   successful.terminal.type("/runtime-extension-source");

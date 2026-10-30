@@ -8,6 +8,7 @@ import semver from "semver";
 const githubOrigin = "https://api.github.com";
 const npmOrigin = "https://registry.npmjs.org";
 const maxBody = 2 * 1024 * 1024;
+const maxTarball = 10 * 1024 * 1024;
 const timeoutMs = 15_000;
 const npmMutationTimeoutMs = 5 * 60_000;
 const packagePattern = /^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
@@ -73,7 +74,7 @@ function npmCli(args, options = {}, command = "npm") {
   return result.stdout;
 }
 
-export async function createAdapters({ repository, token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN, trustedSha = process.env.TRUSTED_SHA, cwd = process.cwd(), npmCommand = "npm" } = {}) {
+export async function createAdapters({ repository, token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN, trustedSha = process.env.TRUSTED_SHA, cwd = process.cwd(), npmCommand = "npm", requestTimeoutMs = timeoutMs } = {}) {
   assert.match(repository ?? "", /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "repository is invalid");
   assert.ok(token, "GitHub API token is required");
   const requestGithub = async (parts, options) => {
@@ -110,6 +111,40 @@ export async function createAdapters({ repository, token = process.env.GITHUB_TO
       assert.equal(object.type, "commit", "tag does not resolve to a commit");
       assert.match(object.sha, shaPattern);
       return { sha: object.sha };
+    },
+    async readNpmTarball(url) {
+      const target = new URL(url);
+      assert.ok(target.protocol === "https:" && target.origin === npmOrigin && !target.username && !target.password, "npm tarball URL must use the approved registry HTTPS origin without URL credentials");
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+      let reader;
+      try {
+        const response = await fetch(target, { signal: controller.signal, redirect: "error", headers: { accept: "application/octet-stream" } });
+        if (response.status !== 200) {
+          await response.body?.cancel();
+          throw new Error(`HTTP ${response.status} from ${npmOrigin}`);
+        }
+        const declared = Number(response.headers.get("content-length") ?? 0);
+        if (declared > maxTarball) {
+          await response.body?.cancel();
+          throw new Error(`npm tarball exceeds ${maxTarball} bytes`);
+        }
+        reader = response.body?.getReader();
+        const chunks = [];
+        let size = 0;
+        if (reader) for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > maxTarball) throw new Error(`npm tarball exceeds ${maxTarball} bytes`);
+          chunks.push(Buffer.from(value));
+        }
+        assert.ok(size > 0, "npm tarball is empty");
+        return Buffer.concat(chunks, size);
+      } catch (error) {
+        await reader?.cancel().catch(() => {});
+        throw error;
+      } finally { clearTimeout(timer); }
     },
     async readNpm(packageName, version) {
       const encoded = npmPackage(packageName);

@@ -8,13 +8,17 @@ for (const [script, args] of [
   ["row5-probe-runtime.mjs", []],
   ["row5-json-runtime.mjs", []],
   ["row5-editor-runtime.mjs", []],
-  ["row5-rpc-runtime.mjs", []],
+  ["row5-rpc-runtime.mjs", [packageRoot]],
   ["row5-interactive-runtime.mjs", ["failure"]],
   ["row5-interactive-runtime.mjs", ["attachment-retry"]],
   ["row5-interactive-runtime.mjs", ["abort"]],
   ["row5-interactive-runtime.mjs", ["success"]],
 ]) {
-  const result = runIsolated(resolve(repoRoot, `tests/${script}`), args, { settings: { packages: [packageRoot] } });
+  const rpcProbe = script === "row5-rpc-runtime.mjs";
+  // This RPC-only harness composes its injector before the exact package extension; all other probes retain normal manifest loading.
+  const result = runIsolated(resolve(repoRoot, `tests/${script}`), args, {
+    settings: rpcProbe ? { packages: [], testPackageRoot: packageRoot } : { packages: [packageRoot] },
+  });
   if (result.error) throw result.error;
   assert.equal(result.status, 0, `${script} failed:\n${result.stdout}\n${result.stderr}`);
   process.stdout.write(result.stdout);

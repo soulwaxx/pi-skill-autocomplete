@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isInitialRelease } from "./skill-context-expectations.mjs";
 
 const extensionPath = process.argv[2];
 if (!extensionPath) throw new Error("skill autocomplete extension path required");
 const { default: skillAutocompleteExtension } = await import(pathToFileURL(extensionPath));
+const initialRelease = isInitialRelease(dirname(dirname(extensionPath)));
 const controller = new AbortController();
 
-async function createProvider(skills) {
+async function createProvider(skills, { fileCompletionHook = true } = {}) {
   const delegated = { items: [{ value: "delegated", label: "delegated" }], prefix: "" };
   let wrappedSearches = 0;
   let wrapper;
@@ -16,11 +19,12 @@ async function createProvider(skills) {
     triggerCharacters: ["@"],
     async getSuggestions() { wrappedSearches++; return delegated; },
     applyCompletion() { return { lines: ["delegated"], cursorLine: 0, cursorCol: 9 }; },
-    shouldTriggerFileCompletion() { return true; },
+    ...(fileCompletionHook ? { shouldTriggerFileCompletion() { return true; } } : {}),
   };
   const handlers = new Map();
   const pi = {
     on(event, handler) { handlers.set(event, handler); },
+    registerMarkdownTransformer(handler) { this.markdownTransformer = handler; },
     getCommands() { return (typeof skills === "function" ? skills() : skills).map(({ name, description = "", source = "skill" }) => ({ name: `skill:${name}`, description, source })); },
   };
   const ctx = {
@@ -83,6 +87,17 @@ test("delegates non-skill autocomplete and file completion unchanged", async () 
   assert.equal(await query(provider, "@file"), delegated);
   assert.deepEqual(provider.applyCompletion(["@file"], 0, 5, { value: "file", label: "file" }, "@file"), { lines: ["delegated"], cursorLine: 0, cursorCol: 9 });
   assert.equal(provider.shouldTriggerFileCompletion(["@file"], 0, 5), true);
+  assert.equal(result.wrappedSearches, 1);
+});
+
+test("defaults missing file-completion hooks according to retained package identity", async () => {
+  const result = await createProvider([{ name: "x" }], { fileCompletionHook: false });
+  const { provider, delegated } = result;
+  assert.equal(provider.shouldTriggerFileCompletion(["@file"], 0, 5), !initialRelease);
+  assert.equal(await query(provider, "@file"), delegated);
+  assert.deepEqual(provider.applyCompletion(["@file"], 0, 5, { value: "file", label: "file" }, "@file"), {
+    lines: ["delegated"], cursorLine: 0, cursorCol: 9,
+  });
   assert.equal(result.wrappedSearches, 1);
 });
 

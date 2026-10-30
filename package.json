@@ -40,6 +40,11 @@
     "release:check": "node .github/release-tools/check.mjs",
     "test:release": "node tests/run-release-tests.mjs"
   },
+  "overrides": {
+    "@earendil-works/pi-coding-agent": {
+      "undici": "8.12.2"
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "2.6.2",
     "@earendil-works/pi-coding-agent": "1.4.0",

@@ -45,7 +45,18 @@ export async function verifySource({ repository, sha, git, api, evidence, now = 
   assert.ok(Array.isArray(runs), "GitHub workflow-runs response is malformed");
   const eligibleRuns = runs.filter((item) => item.repository.full_name === repository && item.path === ".github/workflows/test.yml" && item.event === "pull_request" && item.head_sha === pr.head.sha && item.status === "completed" && item.conclusion === "success").sort((a, b) => b.id - a.id);
   assert.ok(eligibleRuns.length, "no successful current PR CI run for the exact PR head");
-  const run = eligibleRuns[0];
+  const selectedRun = eligibleRuns[0];
+  const run = await api(`repos/${repository}/actions/runs/${selectedRun.id}/attempts/${selectedRun.run_attempt}`);
+  assert.equal(run.id, selectedRun.id);
+  assert.equal(run.run_attempt, selectedRun.run_attempt);
+  assert.equal(run.repository?.full_name, repository);
+  assert.equal(run.path, ".github/workflows/test.yml");
+  assert.equal(run.event, "pull_request");
+  assert.equal(run.head_sha, pr.head.sha);
+  assert.equal(run.status, "completed");
+  assert.equal(run.conclusion, "success");
+  const attemptStartedAt = Date.parse(run.run_started_at);
+  assert.ok(Number.isFinite(attemptStartedAt) && attemptStartedAt <= now + 5 * 60 * 1000 && now - attemptStartedAt <= maxProofAgeMs, "successful PR CI attempt is missing, stale, or future-dated");
   const proof = await evidence(run, pr);
   assert.match(proof.testedSha ?? "", shaPattern, "artifact tested-source SHA is malformed");
   const testedCommit = await api(`repos/${repository}/git/commits/${proof.testedSha}`);
@@ -56,9 +67,7 @@ export async function verifySource({ repository, sha, git, api, evidence, now = 
   assert.equal(actualTree, tree, "tested PR merge-ref tree differs from merged main source tree");
   assert.deepEqual(actualParents, [parent, pr.head.sha], "artifact tested-source commit is not the exact tested PR merge ref");
   validateEvidence(proof, { repository, sha, tree, parent, testedSha: proof.testedSha, pr, run }, now);
-  const runCreatedAt = Date.parse(run.created_at);
-  assert.ok(Number.isFinite(runCreatedAt) && runCreatedAt <= now + 5 * 60 * 1000 && now - runCreatedAt <= maxProofAgeMs, "successful PR CI run is missing, stale, or future-dated");
-  assert.ok(Math.abs(Date.parse(proof.createdAt) - runCreatedAt) <= maxProofAgeMs, "artifact evidence timestamp is unrelated to its CI run");
+  assert.ok(Math.abs(Date.parse(proof.createdAt) - attemptStartedAt) <= maxProofAgeMs, "artifact evidence timestamp is unrelated to its successful CI attempt");
   return proof;
 }
 
@@ -100,12 +109,20 @@ export async function githubEvidence(repository, run, pr, { api = githubApi, exe
   assert.ok(Array.isArray(artifacts), "artifact listing is malformed");
   const artifact = artifacts.find((item) => item.name === `verified-source-${run.run_attempt}` && item.workflow_run?.id === run.id);
   assert.ok(artifact && !artifact.expired && artifact.size_in_bytes > 0 && artifact.size_in_bytes <= 65536, "exact-run tested-source artifact missing, oversized, or expired");
+  const attemptStartedAt = Date.parse(run.run_started_at);
   const createdAt = Date.parse(artifact.created_at);
-  assert.ok(Number.isFinite(createdAt) && createdAt <= now + 5 * 60 * 1000 && Math.abs(createdAt - Date.parse(run.created_at)) <= maxProofAgeMs, "tested-source artifact timestamp is invalid");
+  assert.ok(Number.isFinite(attemptStartedAt) && attemptStartedAt <= now + 5 * 60 * 1000 && now - attemptStartedAt <= maxProofAgeMs, "successful CI attempt is missing, stale, or future-dated");
+  assert.ok(Number.isFinite(createdAt) && createdAt <= now + 5 * 60 * 1000 && Math.abs(createdAt - attemptStartedAt) <= maxProofAgeMs, "tested-source artifact timestamp is invalid");
   const bytes = execute("gh", ["api", `repos/${repository}/actions/artifacts/${artifact.id}/zip`], { encoding: "buffer", timeout: 60000, maxBuffer: 1024 * 1024 });
   const json = execute("python3", ["-c", "import io,json,sys,zipfile\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nassert z.namelist()==['source.json'] and z.getinfo('source.json').file_size<=8192\nprint(json.dumps(json.loads(z.read('source.json'))))"], { input: bytes, encoding: "utf8", timeout: 10000, maxBuffer: 16384 });
   const proof = JSON.parse(json);
+  assert.equal(proof.repository, repository);
+  assert.equal(proof.workflow, ".github/workflows/test.yml");
+  assert.equal(proof.event, "pull_request");
+  assert.equal(proof.runId, run.id);
+  assert.equal(proof.runAttempt, run.run_attempt, "artifact proof runAttempt mismatch");
   assert.equal(proof.pr, pr.number);
+  assert.equal(proof.headSha, pr.head.sha);
   return proof;
 }
 
