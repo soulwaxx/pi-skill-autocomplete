@@ -9,6 +9,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ci-config-test-"));
 try {
   fs.cpSync(path.join(root, ".github"), path.join(fixture, ".github"), { recursive: true, filter: (source) => !source.split(path.sep).includes("node_modules") });
+  fs.symlinkSync(path.join(root, ".github/release-tools/node_modules"), path.join(fixture, ".github/release-tools/node_modules"), "dir");
   fs.copyFileSync(path.join(root, "package.json"), path.join(fixture, "package.json"));
   const check = () => spawnSync(process.execPath, [".github/release-tools/check.mjs"], { cwd: fixture, encoding: "utf8" });
   const baseline = check();
@@ -25,6 +26,17 @@ try {
   fs.writeFileSync(ciPath, ci);
   fs.writeFileSync(releasePath, release);
 
+  const pkgPath = path.join(fixture, "package.json"), pkg = fs.readFileSync(pkgPath, "utf8");
+  const withUndici = (text, version) => {
+    const manifest = JSON.parse(text);
+    manifest.overrides["@earendil-works/pi-coding-agent"].undici = version;
+    return JSON.stringify(manifest);
+  };
+  fs.writeFileSync(pkgPath, withUndici(pkg, "8.99.0"));
+  const patched = check();
+  assert.equal(patched.status, 0, patched.stderr);
+  fs.writeFileSync(pkgPath, pkg);
+
   const rejects = (relative, mutate, message) => {
     const file = path.join(fixture, relative), original = fs.readFileSync(file, "utf8");
     const changed = mutate(original);
@@ -36,6 +48,14 @@ try {
       assert.match(result.stderr, message);
     } finally { fs.writeFileSync(file, original); }
   };
+  for (const version of ["8.12.1", "9.0.0", "^8.12.3", "8.99.0-beta.1"]) {
+    rejects("package.json", (text) => withUndici(text, version), /exact patched Undici 8 version/);
+  }
+  rejects("package.json", (text) => {
+    const manifest = JSON.parse(text);
+    manifest.overrides.undici = manifest.overrides["@earendil-works/pi-coding-agent"].undici;
+    return JSON.stringify(manifest);
+  }, /must remain narrowly scoped/);
   rejects(".github/workflows/release.yml", (text) => `${text}\n# \${{ secrets.NPM_TOKEN }}\n`, /OIDC-only/);
   rejects(".github/release-tools/adapters.mjs", (text) => `${text}\n// bootstrapToken fallback\n`, /must not accept npm credentials/);
   rejects(".github/workflows/test.yml", (text) => text.replace("[opened, synchronize, reopened]", "[opened, synchronize, reopened, edited]"), /AssertionError/);
