@@ -107,7 +107,7 @@ try {
   assert.ok(Array.isArray(installedSettings.packages), "Pi install wrote package settings");
   run(process.execPath, [cli, "list"], { cwd: tempRoot });
 
-  // Pi 1.4.0's SDK/CLI host suites use the Pi resource loader with the exact
+  // Pi 1.5.2's SDK/CLI host suites use the Pi resource loader with the exact
   // installed package path and its pi manifest. The fake observer/provider is
   // a separate extension; it never imports or duplicates the package runtime.
   const hostSuite = runIsolated(
