@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { Markdown as PiMarkdown } from "../node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks/chunk-FF6XOTWB.js";
+import { Markdown as PiMarkdown } from "@earendil-works/pi-tui";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
