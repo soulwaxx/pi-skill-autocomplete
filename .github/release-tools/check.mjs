@@ -56,8 +56,8 @@ assert.match(ci, /npm audit --prefix \.github\/release-tools --audit-level=high/
 const undiciVersion = pkg.overrides?.["@earendil-works/pi-coding-agent"]?.undici;
 assert.deepEqual(pkg.overrides, { "@earendil-works/pi-coding-agent": { undici: undiciVersion } }, "the temporary Pi development-tree Undici override must remain narrowly scoped");
 assert.ok(valid(undiciVersion) === undiciVersion && satisfies(undiciVersion, ">=8.12.2 <9"), "the temporary override must pin an exact patched Undici 8 version");
-assert.equal(pkg.devDependencies["@earendil-works/pi-coding-agent"], "1.4.0");
-assert.equal(pkg.devDependencies["@earendil-works/pi-tui"], "1.4.0");
+assert.equal(pkg.devDependencies["@earendil-works/pi-coding-agent"], "1.5.2");
+assert.equal(pkg.devDependencies["@earendil-works/pi-tui"], "1.5.2");
 assert.deepEqual(pkg.peerDependencies, { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-tui": "*" });
 assert.match(release, /workflow_dispatch:/);
 assert.match(release, /recovery_tag:/);

@@ -10,7 +10,7 @@ After the package is published, install it in Pi:
 pi install npm:@soulwaxx/pi-skill-autocomplete
 ```
 
-Reload Pi after installation. Requires Pi `1.4.0` and Node.js `>=22.19.0`. CI is configured for Linux and macOS with Node 22 and 24. The initial `0.1.0` release has already been published; these source-repository changes do not publish another version.
+Reload Pi after installation. Requires Pi `1.5.2` and Node.js `>=22.19.0`. CI is configured for Linux and macOS with Node 22 and 24. The initial `0.1.0` release has already been published; these source-repository changes do not publish another version.
 
 ## Use
 
